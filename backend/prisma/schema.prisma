@@ -1,0 +1,270 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ATHLETE
+  COACH
+  AT_PT
+  PARENT
+  ADMIN
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         Role
+  athlete      Athlete? @relation(fields: [athleteId], references: [id])
+  athleteId    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  coachTeams   CoachTeam[]
+}
+
+model Athlete {
+  id               String               @id @default(cuid())
+  displayName      String
+  jerseyNumber     String?
+  sport            String?
+  position         String?
+  team             String?
+  sex              String?
+  dateOfBirth      DateTime?
+  heightCm         Float?
+  weightKg         Float?
+  notes            String?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  movementSessions MovementAssessment[]
+  movementProofs   MovementProof[]
+  riskSnapshots    RiskSnapshot[]
+  rehabAssessments RehabAssessment[]
+  users            User[]
+  contacts         AthleteContact[]
+}
+
+model AthleteContact {
+  id         String  @id @default(cuid())
+  athlete    Athlete @relation(fields: [athleteId], references: [id])
+  athleteId  String
+  name       String
+  relationship String
+  email      String?
+  phone      String?
+  role       Role
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model MovementAssessment {
+  id             String          @id @default(cuid())
+  athlete        Athlete         @relation(fields: [athleteId], references: [id])
+  athleteId      String
+  sessionId      String?
+  drillType      String
+  riskRating     Int
+  cues           String
+  metrics        String
+  context        String?
+  rawModelOutput String?
+  verdict        String?
+  verdictReason  String?
+  viewQuality    Json?
+  baselineBand   Json?
+  bandUncertainty0to1 Float?
+  microPlan      Json?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  frames         MovementFrame[]
+  recommendations Intervention[]
+  overlays       MovementOverlay[]
+  proof          MovementProof?
+}
+
+model MovementFrame {
+  id            String             @id @default(cuid())
+  assessment    MovementAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  assessmentId  String
+  snapshotUrl   String
+  label         String?
+  capturedAt    DateTime
+  frameIndex    Int
+  createdAt     DateTime           @default(now())
+}
+
+model MovementProof {
+  id              String             @id @default(cuid())
+  assessment      MovementAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  assessmentId    String             @unique
+  athlete         Athlete           @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  athleteId       String
+  drillType       String
+  verdict         String
+  verdictReason   String?
+  withinBand      Boolean?
+  bandDelta       Json?
+  viewQualityScore Float?
+  viewQualityLabel String?
+  cue             String?
+  metrics         Json?
+  baselineBand    Json?
+  uncertainty0to1 Float?
+  proofAt         DateTime          @default(now())
+  microPlan       Json?
+  fixAssigned     Boolean           @default(false)
+  microPlanCompleted   Boolean      @default(false)
+  microPlanCompletedAt DateTime?
+  microPlanRpe         Int?
+  microPlanPain        Int?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([athleteId, proofAt])
+  @@index([drillType])
+}
+
+model MovementOverlay {
+  id               String             @id @default(cuid())
+  assessment       MovementAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  assessmentId     String
+  overlayType      String
+  label            String?
+  description      String?
+  instructions     String?
+  severity         String?
+  bandStatus       String?
+  metrics          Json?
+  visualization    Json?
+  beforeImageUrl   String?
+  afterImageUrl    String?
+  comparisonLabel  String?
+  createdAt        DateTime           @default(now())
+
+  @@index([assessmentId])
+  @@index([overlayType])
+}
+
+model RiskSnapshot {
+  id                         String      @id @default(cuid())
+  athlete                    Athlete     @relation(fields: [athleteId], references: [id])
+  athleteId                  String
+  exposureMinutes            Int
+  surface                    String
+  temperatureF               Float
+  humidityPct                Float
+  priorLowerExtremityInjury  Boolean
+  sorenessLevel              Int
+  fatigueLevel               Int
+  bodyWeightTrend            String?
+  menstrualPhase             String?
+  notes                      String?
+  recordedFor                DateTime?
+  riskLevel                  String
+  rationale                  String
+  changeToday                String
+  rawModelOutput             String?
+  createdAt                  DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
+  recommendationAcknowledged Boolean     @default(false)
+  riskTrend                  String?
+  uncertainty0to1            Float?
+  drivers                    Json?
+  driverScores               Json?
+  microPlan                  Json?
+  adherence0to1              Float?
+  nextRepCheck               Json?
+  cohortPercentile0to100     Float?
+  environmentPolicyFlags     Json?
+}
+
+model RehabAssessment {
+  id                   String            @id @default(cuid())
+  athlete              Athlete           @relation(fields: [athleteId], references: [id])
+  athleteId            String
+  surgicalSide         String
+  sessionDate          DateTime?
+  limbSymmetryScore    Float
+  cleared              Boolean
+  concerns             String
+  recommendedExercises String
+  athleteSummary       String
+  parentSummary        String
+  clinicianNotes       String
+  rawModelOutput       String?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  videos               RehabVideo[]
+}
+
+model RehabVideo {
+  id             String          @id @default(cuid())
+  rehab          RehabAssessment @relation(fields: [rehabAssessmentId], references: [id], onDelete: Cascade)
+  rehabAssessmentId String
+  url            String
+  testType       String
+  capturedAt     DateTime
+  createdAt      DateTime        @default(now())
+}
+
+model Intervention {
+  id             String             @id @default(cuid())
+  assessment     MovementAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  assessmentId   String
+  focusArea      String
+  message        String
+  audience       String
+  acknowledged   Boolean           @default(false)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+}
+
+model AudienceRewrite {
+  id            String   @id @default(cuid())
+  assessmentId  String?
+  sourceMessage String
+  audience      String
+  tone          String?
+  rewritten     String
+  rawModelOutput String?
+  createdAt     DateTime @default(now())
+}
+
+model RiskFeatureCache {
+  athleteId String @id
+  features  Json
+  updatedAt DateTime @updatedAt
+}
+
+model TeamPlan {
+  id             String   @id @default(cuid())
+  team           String
+  sessionDate    DateTime?
+  sessionLength  Int
+  constraints    Json?
+  selectedTweaks Json?
+  compiledPlan   Json?
+  audit          Json?
+  appliedBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model CoachTeam {
+  id        String   @id @default(cuid())
+  coach     User     @relation(fields: [coachId], references: [id], onDelete: Cascade)
+  coachId   String
+  teamId    String
+  createdAt DateTime @default(now())
+
+  @@unique([coachId, teamId])
+}
