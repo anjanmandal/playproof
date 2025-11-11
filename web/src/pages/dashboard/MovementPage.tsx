@@ -1,14 +1,17 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Alert,
+  AppBar,
+  Autocomplete,
   Avatar,
   Backdrop,
   Box,
   Button,
   Card,
-  CardActions,
   CardContent,
   Chip,
+  Container,
   Dialog,
   DialogActions,
   DialogContent,
@@ -17,24 +20,23 @@ import {
   Grid,
   IconButton,
   LinearProgress,
-  List,
-  ListItem,
-  ListItemText,
   MenuItem,
   Paper,
-  Slider,
+  CircularProgress,
   Snackbar,
   Stack,
+  Tab,
+  Tabs,
   TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
 import DeleteIcon from '@mui/icons-material/Delete';
 import AddPhotoAlternateIcon from '@mui/icons-material/AddPhotoAlternate';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import VideocamIcon from '@mui/icons-material/Videocam';
-import PhotoCameraIcon from '@mui/icons-material/PhotoCamera';
 import StopCircleIcon from '@mui/icons-material/StopCircle';
 import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
 import CancelIcon from '@mui/icons-material/Cancel';
@@ -43,6 +45,12 @@ import KeyboardIcon from '@mui/icons-material/Keyboard';
 import ReplayIcon from '@mui/icons-material/Replay';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CloseIcon from '@mui/icons-material/Close';
+import SensorsIcon from '@mui/icons-material/Sensors';
+import TrendingUpIcon from '@mui/icons-material/TrendingUp';
+import QueryStatsIcon from '@mui/icons-material/QueryStats';
+import InsightsIcon from '@mui/icons-material/Insights';
+import SpeedIcon from '@mui/icons-material/Speed';
+import NorthEastIcon from '@mui/icons-material/NorthEast';
 
 import { createMovementAssessment, fetchMovementAssessments, updateMovementProof } from '@/api/movement';
 import { postRiskVideoFeatures } from '@/api/risk';
@@ -51,13 +59,17 @@ import type {
   DrillType,
   MovementAssessment,
   MovementAssessmentInput,
-  MovementOverlayInstruction,
   MovementVerdict,
+  AthleteProgressMetrics,
+  AthleteSummary,
 } from '@/types';
 import { formatDateTime } from '@/utils/date';
 import { ErrorAlert } from '@/components/common/ErrorAlert';
 import { extractFramesFromVideo, speakCues } from '@/utils/media';
 import { useAuth } from '@/hooks/useAuth';
+import { isWearableIntegrationActive } from '@/config/features';
+import { fetchAthleteProgress, fetchAthletes } from '@/api/athletes';
+import { alpha, useTheme } from '@mui/material/styles';
 
 /* --------------------------------------------
  * LOCAL TYPES & CONSTANTS
@@ -78,17 +90,6 @@ const createFrameDraft = (): FrameDraft => ({
   label: '',
   capturedAt: new Date().toISOString(),
 });
-
-const RISK_SEVERITY_COLOR_MAP: Record<'low' | 'moderate' | 'high', 'success' | 'warning' | 'error'> = {
-  low: 'success',
-  moderate: 'warning',
-  high: 'error',
-};
-
-const BAND_STATUS_COLOR_MAP: Record<'inside' | 'outside', 'success' | 'error'> = {
-  inside: 'success',
-  outside: 'error',
-};
 
 const verdictColorMap: Record<MovementVerdict, 'success' | 'error' | 'warning' | 'info'> = {
   pass: 'success',
@@ -121,132 +122,57 @@ const formatMetricValue = (value: number | null | undefined) => {
   return n.toFixed(2);
 };
 
+const DUMMY_PROGRESS_SERIES: Array<{ label: string; movement: number; risk: number }> = [
+  { label: 'Mon', movement: 6.1, risk: 5.4 },
+  { label: 'Tue', movement: 6.4, risk: 5.1 },
+  { label: 'Wed', movement: 6.7, risk: 4.9 },
+  { label: 'Thu', movement: 6.9, risk: 4.8 },
+  { label: 'Fri', movement: 7.2, risk: 4.6 },
+  { label: 'Sat', movement: 7.4, risk: 4.4 },
+  { label: 'Sun', movement: 7.3, risk: 4.5 },
+];
+
+const DUMMY_LOAD_TREND: Array<{ label: string; load: number; risk: number }> = [
+  { label: 'Mon', load: 62, risk: 32 },
+  { label: 'Tue', load: 68, risk: 30 },
+  { label: 'Wed', load: 54, risk: 36 },
+  { label: 'Thu', load: 71, risk: 27 },
+  { label: 'Fri', load: 64, risk: 29 },
+  { label: 'Sat', load: 76, risk: 25 },
+  { label: 'Sun', load: 58, risk: 34 },
+];
+
+const DUMMY_RISK_BANDS = { green: 9, yellow: 4, red: 2 };
+const RISK_BAND_META = [
+  { key: 'green', label: 'Green', color: '#34d399' },
+  { key: 'yellow', label: 'Yellow', color: '#fbbf24' },
+  { key: 'red', label: 'Red', color: '#f87171' },
+] as const;
+
 /* --------------------------------------------
- * OVERLAY PREVIEW CARD
+ * OVERLAY INSIGHTS CARD
  * -------------------------------------------*/
-interface OverlayPreviewCardProps {
-  overlay: MovementOverlayInstruction;
-  fallbackBefore?: string | null;
-  fallbackAfter?: string | null;
-}
+const safeCardSx = (theme: any) => ({
+  borderRadius: 4,
+  p: { xs: 2, md: 2.5 },
+  overflow: 'hidden',
+  boxSizing: 'border-box',
+  '& *': { minWidth: 0 },
+  background:
+    theme.palette.mode === 'light'
+      ? 'linear-gradient(160deg, rgba(255,255,255,0.96) 0%, rgba(246,248,255,0.92) 100%)'
+      : 'linear-gradient(160deg, rgba(16,20,38,0.82) 0%, rgba(10,14,28,0.92) 100%)',
+  border: '1px solid',
+  borderColor: theme.palette.mode === 'light' ? 'rgba(19,33,111,0.1)' : 'rgba(99,245,197,0.14)',
+});
 
-const OverlayPreviewCard = ({ overlay, fallbackBefore, fallbackAfter }: OverlayPreviewCardProps) => {
-  const [split, setSplit] = useState(60);
+const chipWrapSx = { display: 'flex', flexWrap: 'wrap', gap: 0.75, minWidth: 0 };
 
-  const beforeImage = overlay.beforeImageUrl ?? fallbackBefore ?? null;
-  const afterImage = overlay.afterImageUrl ?? fallbackAfter ?? beforeImage;
-  const hasComparison = Boolean(beforeImage && afterImage && beforeImage !== afterImage);
-  const metricsEntries = overlay.metrics ? Object.entries(overlay.metrics) : [];
+const clamp1 = { display: '-webkit-box', WebkitBoxOrient: 'vertical' as const, WebkitLineClamp: 1, overflow: 'hidden' };
+const clamp2 = { display: '-webkit-box', WebkitBoxOrient: 'vertical' as const, WebkitLineClamp: 2, overflow: 'hidden' };
+const clamp3 = { display: '-webkit-box', WebkitBoxOrient: 'vertical' as const, WebkitLineClamp: 3, overflow: 'hidden' };
 
-  return (
-    <Paper variant="outlined" sx={{ borderRadius: 2, p: 2 }}>
-      <Stack spacing={1.5}>
-        <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-          <Stack spacing={0.5}>
-            <Typography variant="subtitle2" fontWeight={600}>
-              {overlay.label ?? overlay.overlayType.replace(/_/g, ' ')}
-            </Typography>
-            {overlay.description && (
-              <Typography variant="body2" color="text.secondary">
-                {overlay.description}
-              </Typography>
-            )}
-          </Stack>
-          <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent="flex-end">
-            {overlay.bandStatus && (
-              <Chip
-                size="small"
-                color={BAND_STATUS_COLOR_MAP[overlay.bandStatus]}
-                variant="outlined"
-                label={overlay.bandStatus === 'inside' ? 'Inside band' : 'Outside band'}
-              />
-            )}
-            {overlay.severity && (
-              <Chip
-                size="small"
-                variant="outlined"
-                color={RISK_SEVERITY_COLOR_MAP[overlay.severity]}
-                label={`${overlay.severity} emphasis`}
-              />
-            )}
-          </Stack>
-        </Stack>
-
-        {beforeImage ? (
-          <>
-            <Box
-              sx={{
-                position: 'relative',
-                borderRadius: 2,
-                overflow: 'hidden',
-                aspectRatio: '4 / 3',
-                bgcolor: 'grey.100',
-              }}
-            >
-              <Box component="img" src={beforeImage} alt="Baseline overlay frame" sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-              {afterImage && (
-                <>
-                  <Box
-                    component="img"
-                    src={afterImage}
-                    alt="Latest overlay frame"
-                    sx={{
-                      position: 'absolute',
-                      inset: 0,
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'cover',
-                      clipPath: `inset(0 ${Math.max(0, 100 - split)}% 0 0)`,
-                      transition: 'clip-path 0.18s ease-out',
-                      borderRight: '1px solid rgba(255,255,255,0.6)',
-                    }}
-                  />
-                  <Box sx={{ position: 'absolute', top: 0, bottom: 0, left: `${split}%`, width: 2, bgcolor: 'common.white', opacity: 0.85, transform: 'translateX(-1px)' }} />
-                </>
-              )}
-              <Box
-                sx={{
-                  position: 'absolute',
-                  inset: 0,
-                  display: 'flex',
-                  alignItems: 'flex-end',
-                  justifyContent: 'space-between',
-                  p: 1.25,
-                  pointerEvents: 'none',
-                  background: 'linear-gradient(180deg, rgba(0,0,0,0) 55%, rgba(0,0,0,0.35) 100%)',
-                }}
-              >
-                <Typography variant="caption" color="common.white">
-                  {overlay.comparisonLabel ?? (hasComparison ? 'Slide to compare' : 'Baseline frame')}
-                </Typography>
-                {hasComparison && <Typography variant="caption" color="common.white">{split.toFixed(0)}% latest</Typography>}
-              </Box>
-            </Box>
-            {hasComparison && (
-              <Slider size="small" value={split} min={0} max={100} onChange={(_, value) => setSplit(value as number)} aria-label="Overlay comparison slider" />
-            )}
-          </>
-        ) : (
-          <Paper variant="outlined" sx={{ borderRadius: 2, p: 2, bgcolor: 'grey.50' }}>
-            <Typography variant="body2" color="text.secondary">No stored frames available for this overlay yet.</Typography>
-          </Paper>
-        )}
-
-        {overlay.instructions && (
-          <Typography variant="body2" color="text.secondary">{overlay.instructions}</Typography>
-        )}
-
-        {metricsEntries.length > 0 && (
-          <Stack direction="row" spacing={1} flexWrap="wrap">
-            {metricsEntries.map(([key, val]) => (
-              <Chip key={key} size="small" variant="outlined" label={`${formatMetricLabel(key)}: ${formatMetricValue(val as number)}`} />
-            ))}
-          </Stack>
-        )}
-      </Stack>
-    </Paper>
-  );
-};
+// (Overlay visuals removed per latest direction.)
 
 /* --------------------------------------------
  * HELPERS
@@ -341,15 +267,605 @@ const PhaseScoreChips = ({
   );
 };
 
+const SparklineMini = ({ points, color = '#3563ff' }: { points: number[]; color?: string }) => {
+  if (!points.length) {
+    return (
+      <Typography variant="caption" color="text.secondary">
+        Not enough data yet
+      </Typography>
+    );
+  }
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const range = Math.max(max - min, 1);
+  const coords = points.map((value, index) => {
+    const x = (index / Math.max(1, points.length - 1)) * 100;
+    const y = 100 - ((value - min) / range) * 100;
+    return { x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) };
+  });
+  const path = coords.map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x},${point.y}`).join(' ');
+  const areaPath = `${path} L100,100 L0,100 Z`;
+  const lastPoint = coords[coords.length - 1];
+  const fillColor = alpha(color, 0.18);
+  return (
+    <Box component="svg" viewBox="0 0 100 100" sx={{ width: '100%', height: 60 }} preserveAspectRatio="none">
+      <path d={areaPath} fill={fillColor} />
+      <path d={path} fill="none" stroke={color} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />
+      {lastPoint && (
+        <circle cx={lastPoint.x} cy={lastPoint.y} r={3} fill={color} stroke="#0b1020" strokeWidth={1.2} />
+      )}
+    </Box>
+  );
+};
+
+const AthleteProgressCard = ({ data }: { data: AthleteProgressMetrics }) => {
+  const theme = useTheme();
+  const emerald = theme.palette.success.main;
+  const indigo = theme.palette.primary.main;
+  const amber = theme.palette.warning.main;
+
+  const movementPoints = data.movementTrend.map((trend) => trend.verdictScore);
+  const riskPoints = data.riskTrend.map((trend) => trend.riskScore);
+  const plannerRows = data.plannerImpacts.slice(-3).reverse();
+  const graphSeries = useMemo(() => {
+    const count = Math.min(data.movementTrend.length, data.riskTrend.length);
+    if (count >= 4) {
+      const take = Math.min(7, count);
+      return Array.from({ length: take }).map((_, idx) => {
+        const movementEntry = data.movementTrend[data.movementTrend.length - take + idx];
+        const riskEntry = data.riskTrend[data.riskTrend.length - take + idx];
+        const labelDate = movementEntry?.createdAt ?? riskEntry?.createdAt ?? '';
+        const label = labelDate
+          ? new Date(labelDate).toLocaleDateString(undefined, { weekday: 'short' })
+          : `Pt ${idx + 1}`;
+        return {
+          label,
+          movement: movementEntry?.verdictScore ?? 0,
+          risk: riskEntry?.riskScore ?? 0,
+        };
+      });
+    }
+    return DUMMY_PROGRESS_SERIES;
+  }, [data.movementTrend, data.riskTrend]);
+  const riskBandCounts = useMemo(() => {
+    if (!data.riskTrend.length) return DUMMY_RISK_BANDS;
+    return data.riskTrend.reduce(
+      (acc, trend) => {
+        const key = trend.riskLevel as keyof typeof acc;
+        if (acc[key] !== undefined) acc[key] += 1;
+        return acc;
+      },
+      { green: 0, yellow: 0, red: 0 },
+    );
+  }, [data.riskTrend]);
+
+  const movementDelta =
+    movementPoints.length >= 2
+      ? movementPoints[movementPoints.length - 1] - movementPoints[0]
+      : movementPoints.length === 1
+        ? movementPoints[0]
+        : 0;
+  const riskDelta =
+    riskPoints.length >= 2
+      ? riskPoints[riskPoints.length - 1] - riskPoints[0]
+      : riskPoints.length === 1
+        ? riskPoints[0]
+        : 0;
+
+  const makeTileSx = (color: string) => ({
+    flex: 1,
+    borderRadius: 2,
+    border: `1px solid ${alpha(color, 0.25)}`,
+    background: `linear-gradient(135deg, ${alpha(color, 0.18)}, ${alpha(color, 0.04)})`,
+    p: 2,
+    minWidth: 0,
+  });
+
+  return (
+    <Card
+      variant="outlined"
+      sx={{
+        borderRadius: 2,
+        borderColor: alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.08 : 0.05),
+        background: `linear-gradient(165deg, ${alpha(theme.palette.background.paper, 0.96)}, ${alpha(
+          theme.palette.background.default,
+          0.92,
+        )})`,
+        boxShadow: `0 20px 45px ${alpha(theme.palette.common.black, 0.22)}`,
+        backdropFilter: 'blur(10px)',
+      }}
+    >
+      <CardContent sx={{ p: { xs: 2.25, md: 2.75 } }}>
+        <Stack spacing={2.25}>
+          <Typography variant="subtitle1" fontWeight={700} display="flex" alignItems="center" gap={1}>
+            <TrendingUpIcon fontSize="small" color="success" /> Progress pulse
+          </Typography>
+
+          <Box
+            sx={{
+              borderRadius: 2,
+              border: `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
+              background:
+                theme.palette.mode === 'light'
+                  ? 'linear-gradient(135deg, rgba(225,232,255,0.45), rgba(255,255,255,0.8))'
+                  : 'linear-gradient(135deg, rgba(11,16,32,0.8), rgba(16,22,46,0.95))',
+              p: { xs: 1.5, md: 2 },
+            }}
+          >
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }}>
+              <Typography variant="body2" color="text.secondary">
+                Trend snapshot (dummy fallback shown when history is short)
+              </Typography>
+              <Stack direction="row" spacing={1}>
+                <Chip size="small" label="Movement" color="primary" variant="outlined" />
+                <Chip size="small" label="Risk" color="success" variant="outlined" />
+              </Stack>
+            </Stack>
+
+            <ProgressMiniGraph series={graphSeries} />
+          </Box>
+
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.75}>
+            <Box sx={makeTileSx(emerald)}>
+              <Typography variant="overline" sx={{ letterSpacing: 1 }} color="text.secondary">
+                Movement verdicts
+              </Typography>
+              <SparklineMini points={movementPoints} color={emerald} />
+              <Typography variant="body2" color="text.secondary">
+                {movementPoints.length
+                  ? `${movementPoints.length} recent sessions • ${movementDelta >= 0 ? 'Improving +' : 'Needs attention '}${movementDelta.toFixed(1)}`
+                  : 'Log additional sessions to populate this trend.'}
+              </Typography>
+            </Box>
+            <Box sx={makeTileSx(indigo)}>
+              <Typography variant="overline" sx={{ letterSpacing: 1 }} color="text.secondary">
+                Daily risk bands
+              </Typography>
+              <SparklineMini points={riskPoints} color={indigo} />
+              <Typography variant="body2" color="text.secondary">
+                {riskPoints.length
+                  ? `${riskPoints.length} daily snapshots • ${riskDelta <= 0 ? 'Risk down ' : 'Risk up +'}${Math.abs(riskDelta).toFixed(1)}`
+                  : 'Collect daily risk entries to track change.'}
+              </Typography>
+            </Box>
+          </Stack>
+
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.75}>
+            <Box sx={makeTileSx(emerald)}>
+              <Typography variant="overline" sx={{ letterSpacing: 1 }} color="text.secondary">
+                Micro-plan completion
+              </Typography>
+              <Typography variant="h4" sx={{ mt: 0.75 }}>
+                {(data.microPlanStats.completionRate * 100).toFixed(0)}%
+              </Typography>
+              <LinearProgress
+                variant="determinate"
+                value={(data.microPlanStats.completionRate ?? 0) * 100}
+                sx={{
+                  height: 6,
+                  borderRadius: 999,
+                  backgroundColor: alpha(emerald, 0.18),
+                  mt: 1,
+                  '& .MuiLinearProgress-bar': { backgroundColor: emerald },
+                }}
+              />
+              <Typography variant="caption" color="text.secondary">
+                {data.microPlanStats.completed}/{data.microPlanStats.assigned} completed
+              </Typography>
+            </Box>
+            <Box sx={makeTileSx(amber)}>
+              <Typography variant="overline" sx={{ letterSpacing: 1 }} color="text.secondary">
+                Next-rep verification
+              </Typography>
+              <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: 'wrap' }}>
+                <Chip size="small" color="success" label={`Better ${data.verificationStats.better}`} />
+                <Chip size="small" color="warning" variant="outlined" label={`Same ${data.verificationStats.same}`} />
+                <Chip size="small" color="error" variant="outlined" label={`Worse ${data.verificationStats.worse}`} />
+              </Stack>
+              <Typography variant="caption" color="text.secondary">
+                Pending checks: {data.verificationStats.pending}
+              </Typography>
+            </Box>
+            <Box sx={makeTileSx(indigo)}>
+              <Typography variant="overline" sx={{ letterSpacing: 1 }} color="text.secondary">
+                Planner impact
+              </Typography>
+              {plannerRows.length === 0 ? (
+                <Typography variant="caption" color="text.secondary">
+                  No planner-linked snapshots yet.
+                </Typography>
+              ) : (
+                <Stack spacing={0.75} sx={{ mt: 0.5 }}>
+                  {plannerRows.map((row) => (
+                    <Stack key={row.snapshotId} direction="row" justifyContent="space-between" alignItems="center">
+                      <Typography variant="body2">Plan {row.planId.slice(0, 6)}</Typography>
+                      <Chip
+                        size="small"
+                        color={row.delta <= 0 ? 'success' : 'warning'}
+                        label={`Δ ${row.delta.toFixed(2)}`}
+                      />
+                    </Stack>
+                  ))}
+                </Stack>
+              )}
+            </Box>
+          </Stack>
+
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.75}>
+            <RiskBandDistribution counts={riskBandCounts} />
+            <ComplianceGauge stats={data.microPlanStats} />
+          </Stack>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+};
+
+const ProgressMiniGraph = ({ series }: { series: Array<{ label: string; movement: number; risk: number }> }) => {
+  const theme = useTheme();
+  const width = 520;
+  const height = 150;
+  const padX = 28;
+  const padY = 20;
+  const innerWidth = width - padX * 2;
+  const innerHeight = height - padY * 2;
+
+  const buildPoints = (key: 'movement' | 'risk') => {
+    const values = series.map((point) => point[key]);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const span = Math.max(max - min, 1e-6);
+    return series.map((point, idx) => {
+      const x = padX + (innerWidth * idx) / Math.max(series.length - 1, 1);
+      const y = padY + innerHeight - ((point[key] - min) / span) * innerHeight;
+      return { x, y, label: point.label, value: point[key] };
+    });
+  };
+
+  const movementPoints = buildPoints('movement');
+  const riskPoints = buildPoints('risk');
+  const pathFromPoints = (points: Array<{ x: number; y: number }>) =>
+    points.map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(2)},${pt.y.toFixed(2)}`).join(' ');
+  const movementPath = pathFromPoints(movementPoints);
+  const movementAreaPath = `${movementPath} L ${padX + innerWidth},${padY + innerHeight} L ${padX},${padY + innerHeight} Z`;
+  const riskPath = pathFromPoints(riskPoints);
+
+  return (
+    <Box component="svg" viewBox={`0 0 ${width} ${height}`} sx={{ width: '100%', height: 160, mt: 1 }}>
+      <defs>
+        <linearGradient id="movementGradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={alpha(theme.palette.primary.main, 0.35)} />
+          <stop offset="100%" stopColor={alpha(theme.palette.primary.main, 0.02)} />
+        </linearGradient>
+      </defs>
+      {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+        const y = padY + innerHeight * ratio;
+        return (
+          <line
+            key={`grid-${ratio}`}
+            x1={padX}
+            y1={y}
+            x2={padX + innerWidth}
+            y2={y}
+            stroke={alpha(theme.palette.text.primary, 0.08)}
+            strokeWidth={1}
+          />
+        );
+      })}
+      <path d={movementAreaPath} fill="url(#movementGradient)" />
+      <path d={movementPath} fill="none" stroke={theme.palette.primary.main} strokeWidth={2.8} strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d={riskPath}
+        fill="none"
+        stroke={theme.palette.success.main}
+        strokeWidth={2.2}
+        strokeDasharray="6 5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      {movementPoints.map((pt, idx) => (
+        <circle key={`m-${idx}`} cx={pt.x} cy={pt.y} r={3.5} fill={theme.palette.primary.main} />
+      ))}
+      {riskPoints.map((pt, idx) => (
+        <circle
+          key={`r-${idx}`}
+          cx={pt.x}
+          cy={pt.y}
+          r={3}
+          fill={theme.palette.background.paper}
+          stroke={theme.palette.success.main}
+          strokeWidth={2}
+        />
+      ))}
+      {series.map((point, idx) => {
+        const x = padX + (innerWidth * idx) / Math.max(series.length - 1, 1);
+        return (
+          <text
+            key={`label-${point.label}`}
+            x={x}
+            y={height - 4}
+            textAnchor="middle"
+            fontSize={11}
+            fill={alpha(theme.palette.text.primary, 0.72)}
+          >
+            {point.label}
+          </text>
+        );
+      })}
+    </Box>
+  );
+};
+
+const RiskBandDistribution = ({ counts }: { counts: { green: number; yellow: number; red: number } }) => {
+  const theme = useTheme();
+  const total = Object.values(counts).reduce((acc, val) => acc + val, 0) || 1;
+  return (
+    <Box
+      sx={{
+        flex: 1,
+        borderRadius: 2,
+        border: `1px solid ${alpha(theme.palette.warning.main, 0.25)}`,
+        background:
+          theme.palette.mode === 'light'
+            ? 'linear-gradient(135deg, rgba(255,247,220,0.6), rgba(255,255,255,0.9))'
+            : 'linear-gradient(135deg, rgba(48,34,6,0.8), rgba(21,14,3,0.95))',
+        p: { xs: 2, md: 2.5 },
+        minWidth: 0,
+      }}
+    >
+      <Typography variant="overline" sx={{ letterSpacing: 1 }} color="text.secondary">
+        Risk band distribution
+      </Typography>
+      <Stack direction="row" sx={{ mt: 1, borderRadius: 999, overflow: 'hidden', height: 32, border: '1px solid', borderColor: alpha('#000', 0.08) }}>
+        {RISK_BAND_META.map((band) => {
+          const pct = (counts[band.key] / total) * 100;
+          return (
+            <Box key={band.key} sx={{ width: `${pct}%`, backgroundColor: alpha(band.color, 0.85) }} />
+          );
+        })}
+      </Stack>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1.5 }}>
+        {RISK_BAND_META.map((band) => (
+          <Stack key={band.key} direction="row" spacing={1} alignItems="center">
+            <Box sx={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: band.color }} />
+            <Typography variant="caption" color="text.secondary">
+              {band.label}: {counts[band.key]} ({Math.round((counts[band.key] / total) * 100)}%)
+            </Typography>
+          </Stack>
+        ))}
+      </Stack>
+    </Box>
+  );
+};
+
+const ComplianceGauge = ({ stats }: { stats: AthleteProgressMetrics['microPlanStats'] }) => {
+  const theme = useTheme();
+  const pct = (stats.completionRate ?? 0) * 100;
+  const circumference = 2 * Math.PI * 54;
+  const offset = circumference - (pct / 100) * circumference;
+  return (
+    <Box
+      sx={{
+        flex: 1,
+        borderRadius: 2,
+        border: `1px solid ${alpha(theme.palette.success.main, 0.25)}`,
+        background:
+          theme.palette.mode === 'light'
+            ? 'linear-gradient(135deg, rgba(209,250,229,0.6), rgba(255,255,255,0.95))'
+            : 'linear-gradient(135deg, rgba(9,34,24,0.8), rgba(5,18,12,0.95))',
+        p: { xs: 2, md: 2.5 },
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1,
+      }}
+    >
+      <Typography variant="overline" sx={{ letterSpacing: 1 }} color="text.secondary">
+        Micro-plan compliance
+      </Typography>
+      <Box sx={{ position: 'relative', width: 140, height: 140 }}>
+        <Box component="svg" viewBox="0 0 140 140" sx={{ width: '100%', height: '100%' }}>
+          <circle cx="70" cy="70" r="54" stroke={alpha(theme.palette.success.main, 0.15)} strokeWidth="12" fill="none" />
+          <circle
+            cx="70"
+            cy="70"
+            r="54"
+            stroke={theme.palette.success.main}
+            strokeWidth="12"
+            fill="none"
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+            strokeLinecap="round"
+            transform="rotate(-90 70 70)"
+          />
+        </Box>
+        <Stack
+          spacing={0}
+          alignItems="center"
+          sx={{ position: 'absolute', inset: 0, justifyContent: 'center' }}
+        >
+          <Typography variant="h4" fontWeight={700}>
+            {Math.round(pct)}%
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            {stats.completed}/{stats.assigned} completed
+          </Typography>
+        </Stack>
+      </Box>
+      <Typography variant="body2" color="text.secondary">
+        Track completion momentum over the week; connect athlete app for real-time updates.
+      </Typography>
+    </Box>
+  );
+};
+
+const AthletePerformanceGraph = () => {
+  const theme = useTheme();
+  const width = 720;
+  const height = 260;
+  const padX = 32;
+  const padY = 24;
+  const innerWidth = width - padX * 2;
+  const innerHeight = height - padY * 2;
+  const series = DUMMY_LOAD_TREND;
+
+  const buildPoints = (key: 'load' | 'risk') => {
+    const values = series.map((point) => point[key]);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const span = Math.max(max - min, 1e-6);
+    return series.map((point, idx) => ({
+      x: padX + (innerWidth * idx) / Math.max(series.length - 1, 1),
+      y: padY + innerHeight - ((point[key] - min) / span) * innerHeight,
+      value: point[key],
+      label: point.label,
+    }));
+  };
+
+  const loadPoints = buildPoints('load');
+  const riskPoints = buildPoints('risk');
+  const loadPath = loadPoints.map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`).join(' ');
+  const riskPath = riskPoints.map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`).join(' ');
+  const loadArea = `${loadPath} L ${padX + innerWidth},${padY + innerHeight} L ${padX},${padY + innerHeight} Z`;
+  const avgLoad = Math.round(series.reduce((acc, point) => acc + point.load, 0) / series.length);
+  const avgRisk = Math.round(series.reduce((acc, point) => acc + point.risk, 0) / series.length);
+
+  return (
+    <Card
+      variant="outlined"
+      sx={{
+        borderRadius: 2,
+        borderColor: alpha(theme.palette.primary.main, 0.12),
+        background:
+          theme.palette.mode === 'light'
+            ? 'linear-gradient(150deg, rgba(255,255,255,0.96), rgba(239,244,255,0.92))'
+            : 'linear-gradient(150deg, rgba(8,11,25,0.96), rgba(7,11,24,0.92))',
+      }}
+    >
+      <CardContent sx={{ p: { xs: 2, md: 3 } }}>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }}>
+            <Box>
+              <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 1 }}>
+                Weekly load vs dummy risk
+              </Typography>
+              <Typography variant="h6" fontWeight={700}>
+                Preview graph
+              </Typography>
+            </Box>
+            <Stack direction="row" spacing={1}>
+              <Chip size="small" label="Load" color="primary" variant="outlined" />
+              <Chip size="small" label="Risk" color="success" variant="outlined" />
+            </Stack>
+          </Stack>
+
+          <Box component="svg" viewBox={`0 0 ${width} ${height}`} sx={{ width: '100%', height: { xs: 220, md: 260 } }}>
+            <defs>
+              <linearGradient id="perfLoad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={alpha(theme.palette.primary.main, 0.3)} />
+                <stop offset="100%" stopColor="transparent" />
+              </linearGradient>
+            </defs>
+            {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+              const y = padY + innerHeight * ratio;
+              return (
+                <line
+                  key={`gl-${ratio}`}
+                  x1={padX}
+                  y1={y}
+                  x2={padX + innerWidth}
+                  y2={y}
+                  stroke={alpha(theme.palette.text.primary, 0.08)}
+                  strokeWidth={1}
+                />
+              );
+            })}
+            <path d={loadArea} fill="url(#perfLoad)" />
+            <path d={loadPath} fill="none" stroke={theme.palette.primary.main} strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" />
+            <path
+              d={riskPath}
+              fill="none"
+              stroke={theme.palette.success.main}
+              strokeWidth={2.2}
+              strokeDasharray="8 6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            {loadPoints.map((pt, idx) => (
+              <circle key={`load-${idx}`} cx={pt.x} cy={pt.y} r={4} fill={theme.palette.primary.main} />
+            ))}
+            {riskPoints.map((pt, idx) => (
+              <circle
+                key={`risk-${idx}`}
+                cx={pt.x}
+                cy={pt.y}
+                r={3.2}
+                fill={theme.palette.background.paper}
+                stroke={theme.palette.success.main}
+                strokeWidth={2}
+              />
+            ))}
+            {series.map((point, idx) => {
+              const x = padX + (innerWidth * idx) / Math.max(series.length - 1, 1);
+              return (
+                <text
+                  key={`perf-${point.label}`}
+                  x={x}
+                  y={height - 4}
+                  textAnchor="middle"
+                  fontSize={12}
+                  fill={alpha(theme.palette.text.primary, 0.75)}
+                >
+                  {point.label}
+                </text>
+              );
+            })}
+          </Box>
+
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <Stack spacing={0.25}>
+              <Typography variant="caption" color="text.secondary">
+                Avg load
+              </Typography>
+              <Typography variant="h5" fontWeight={700}>
+                {avgLoad}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Dummy data – hook up wearable once ready.
+              </Typography>
+            </Stack>
+            <Stack spacing={0.25}>
+              <Typography variant="caption" color="text.secondary">
+                Avg risk
+              </Typography>
+              <Typography variant="h5" fontWeight={700}>
+                {avgRisk}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Trending toward green zone.
+              </Typography>
+            </Stack>
+          </Stack>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+};
+
 /* --------------------------------------------
  * MAIN COMPONENT
  * -------------------------------------------*/
 export const MovementPage = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
+  const wearableIntegrationActive = isWearableIntegrationActive;
   const athleteIdFromProfile = user?.athleteId ?? '';
 
   // Form state
   const [athleteId, setAthleteId] = useState('');
+  const [athleteDirectory, setAthleteDirectory] = useState<AthleteSummary[]>([]);
+  const [athleteDirectoryLoading, setAthleteDirectoryLoading] = useState(false);
+  const [athleteDirectoryError, setAthleteDirectoryError] = useState<string | null>(null);
+  const [athleteInputValue, setAthleteInputValue] = useState('');
   const [drillType, setDrillType] = useState<DrillType>('drop_jump');
   const [surface, setSurface] = useState('turf');
   const [environment, setEnvironment] = useState('');
@@ -372,6 +888,7 @@ export const MovementPage = () => {
   const [autoWeatherError, setAutoWeatherError] = useState<string | null>(null);
   const [autoWeatherTimestamp, setAutoWeatherTimestamp] = useState<string | null>(null);
   const [frameMode, setFrameMode] = useState<'summary' | 'edit'>('edit');
+  const [leftTab, setLeftTab] = useState<'setup' | 'capture' | 'frames'>('setup');
 
   // Proof / micro-plan actions
   const [assigningProofId, setAssigningProofId] = useState<string | null>(null);
@@ -381,6 +898,8 @@ export const MovementPage = () => {
   // Details dialog
   const [detailAssessmentId, setDetailAssessmentId] = useState<string | null>(null);
   const detailAssessment = useMemo(() => history.find((item) => item.id === detailAssessmentId) ?? null, [history, detailAssessmentId]);
+  const [progressData, setProgressData] = useState<AthleteProgressMetrics | null>(null);
+  const [progressLoading, setProgressLoading] = useState(false);
 
   // Media capture refs
   const videoInputRef = useRef<HTMLInputElement | null>(null);
@@ -407,6 +926,92 @@ export const MovementPage = () => {
   useEffect(() => {
     if (!athleteId && athleteIdFromProfile) setAthleteId(athleteIdFromProfile);
   }, [athleteId, athleteIdFromProfile]);
+
+  useEffect(() => {
+    let active = true;
+    setAthleteDirectoryLoading(true);
+    fetchAthletes()
+      .then((athletes) => {
+        if (!active) return;
+        setAthleteDirectory(athletes);
+        setAthleteDirectoryError(null);
+      })
+      .catch((err) => {
+        console.warn('Failed to load athletes', err);
+        if (!active) return;
+        setAthleteDirectory([]);
+        setAthleteDirectoryError('Unable to load roster. Type an athlete ID manually.');
+      })
+      .finally(() => {
+        if (active) setAthleteDirectoryLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (athleteId) return;
+    setAthleteInputValue('');
+  }, [athleteId]);
+
+  useEffect(() => {
+    if (!athleteId) return;
+    const match = athleteDirectory.find((athlete) => athlete.id === athleteId);
+    const label = match?.displayName ?? athleteId;
+    setAthleteInputValue(label);
+  }, [athleteId, athleteDirectory]);
+
+  useEffect(() => {
+    if (!detailAssessment?.athleteId) {
+      setProgressData(null);
+      return;
+    }
+    let active = true;
+    setProgressLoading(true);
+    fetchAthleteProgress(detailAssessment.athleteId)
+      .then((metrics) => {
+        if (!active) return;
+        setProgressData(metrics);
+      })
+      .catch((error) => {
+        console.warn('Failed to load athlete progress', error);
+        if (!active) return;
+        setProgressData(null);
+      })
+      .finally(() => {
+        if (active) setProgressLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [detailAssessment?.athleteId]);
+
+  const handleAthleteSelect = useCallback(
+    (next: AthleteSummary | string | null) => {
+      if (!next) {
+        setAthleteId('');
+        setAthleteInputValue('');
+        return;
+      }
+      if (typeof next === 'string') {
+        const trimmed = next.trim();
+        if (!trimmed.length) return;
+        setAthleteId(trimmed);
+        setAthleteInputValue(trimmed);
+        return;
+      }
+      setAthleteId(next.id);
+      setAthleteInputValue(next.displayName ?? next.id);
+    },
+    [],
+  );
+
+  const handleAthleteInputCommit = useCallback(() => {
+    const trimmed = athleteInputValue.trim();
+    if (!trimmed.length) return;
+    setAthleteId(trimmed);
+  }, [athleteInputValue]);
 
   const validFrames = useMemo(() => frames.filter((frame) => frame.url.trim()), [frames]);
   useEffect(() => {
@@ -444,6 +1049,7 @@ export const MovementPage = () => {
       return next;
     });
     setFrameMode('summary');
+    setLeftTab('frames');
   }, []);
 
   const uploadAndAppendBlobs = useCallback(
@@ -604,6 +1210,7 @@ export const MovementPage = () => {
   }, [stopCameraPreview]);
 
   const canSubmit = useMemo(() => athleteId.trim().length > 0 && frames.some((f) => f.url.trim().length > 0), [athleteId, frames]);
+  const captureUnlocked = useMemo(() => athleteId.trim().length > 0, [athleteId]);
 
   /* DATA: HISTORY */
   const loadHistory = useCallback(async () => {
@@ -646,6 +1253,7 @@ export const MovementPage = () => {
 
       setFrames([createFrameDraft()]);
       setFrameMode('edit');
+      setLeftTab('capture');
       await loadHistory();
 
       const lowViewQuality = assessment.viewQuality && assessment.viewQuality.score0to1 < 0.6;
@@ -929,6 +1537,7 @@ export const MovementPage = () => {
 
   const onDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    if (!athleteId.trim()) return;
     const files = Array.from(e.dataTransfer.files);
     if (!files.length) return;
     const images = files.filter((f) => f.type.startsWith('image/'));
@@ -951,7 +1560,105 @@ export const MovementPage = () => {
 
   const analyzingCapture = processingVideo || uploadingMedia;
 
-  /* RENDER */
+  const sessionInsights = useMemo(() => {
+    if (!history.length) return null;
+    const parseTimestamp = (assessment: MovementAssessment) => {
+      const primary = assessment.createdAt ?? undefined;
+      const fallback = assessment.updatedAt ?? undefined;
+      return Date.parse(primary ?? '') || Date.parse(fallback ?? '') || 0;
+    };
+    const sorted = [...history].sort((a, b) => parseTimestamp(b) - parseTimestamp(a));
+    const total = sorted.length;
+    const avgRisk = sorted.reduce((acc, assessment) => acc + (assessment.riskRating ?? 0), 0) / total;
+    const highRiskCount = sorted.filter((assessment) => (assessment.riskRating ?? 0) >= 2).length;
+    const verdicts = sorted.map(
+      (assessment) => (assessment.verdict ?? assessment.proof?.verdict) as MovementVerdict | undefined,
+    );
+    const retakeCount = verdicts.filter((verdict) => verdict === 'retake').length;
+    const passCount = verdicts.filter((verdict) => verdict === 'pass').length;
+    const avgViewConfidence =
+      sorted.reduce(
+        (acc, assessment) =>
+          acc + (assessment.viewQuality?.score0to1 ?? assessment.proof?.viewQuality?.score0to1 ?? 0),
+        0,
+      ) / total;
+    const latest = sorted[0];
+    const previous = sorted[1];
+    const trend = previous ? (latest.riskRating ?? 0) - (previous.riskRating ?? 0) : 0;
+
+    return {
+      avgRisk,
+      highRiskCount,
+      retakeRate: retakeCount / total,
+      passRate: passCount / total,
+      avgViewConfidence,
+      trend,
+      latest,
+      sampleSize: total,
+    };
+  }, [history]);
+
+  const totalAssessments = history.length;
+  const latestAssessment = sessionInsights?.latest ?? history[0] ?? null;
+  const latestComputed = latestAssessment ? getAssessmentComputed(latestAssessment) : null;
+
+  const sessionStatCards = useMemo(() => {
+    if (!sessionInsights || !totalAssessments) return [];
+    const passReps = Math.round(sessionInsights.passRate * totalAssessments);
+    const retakeReps = Math.round(sessionInsights.retakeRate * totalAssessments);
+    const viewConfidenceRaw = Number.isFinite(sessionInsights.avgViewConfidence)
+      ? sessionInsights.avgViewConfidence
+      : 0;
+    const viewConfidencePct = Math.round(viewConfidenceRaw * 100);
+    const trendValue = sessionInsights.trend;
+    const trendLabel =
+      trendValue === 0
+        ? 'No change vs last rep'
+        : `${trendValue > 0 ? '+' : '-'}${Math.abs(trendValue).toFixed(1)} vs last rep`;
+    const trendTone =
+      trendValue === 0 ? 'text.secondary' : trendValue > 0 ? 'error.main' : 'success.main';
+
+    return [
+      {
+        key: 'avg-risk',
+        icon: <TrendingUpIcon fontSize="small" />,
+        label: 'Avg risk score',
+        value: Number.isFinite(sessionInsights.avgRisk) ? sessionInsights.avgRisk.toFixed(1) : '—',
+        caption: `${sessionInsights.highRiskCount}/${totalAssessments} high-risk reps`,
+        trend: trendValue,
+        trendLabel,
+        trendTone,
+      },
+      {
+        key: 'pass-rate',
+        icon: <InsightsIcon fontSize="small" />,
+        label: 'Pass rate',
+        value: `${Math.round(sessionInsights.passRate * 100)}%`,
+        caption: `${passReps} passes`,
+        trendLabel: '',
+      },
+      {
+        key: 'retake-rate',
+        icon: <ReplayIcon fontSize="small" />,
+        label: 'Retake frequency',
+        value: `${Math.round(sessionInsights.retakeRate * 100)}%`,
+        caption: `${retakeReps} retakes`,
+        trendLabel: '',
+      },
+      {
+        key: 'view-confidence',
+        icon: <SpeedIcon fontSize="small" />,
+        label: 'View confidence',
+        value: `${viewConfidencePct}%`,
+        caption: 'Camera quality',
+        trendLabel: '',
+      },
+    ];
+  }, [sessionInsights, totalAssessments]);
+
+  /* -------------------------
+   * RENDER
+   * ------------------------*/
   return (
     <>
       {/* hidden inputs */}
@@ -1028,7 +1735,9 @@ export const MovementPage = () => {
                 <Typography variant="body2" color="text.secondary">{detailAssessment.overview.summary}</Typography>
               )}
 
-              {/* verdict + view quality + bands */}
+              {progressLoading && <LinearProgress />}
+              {progressData && <AthleteProgressCard data={progressData} />}
+
               <Stack direction="row" spacing={1} flexWrap="wrap">
                 {detailAssessment.verdict && (
                   <Chip size="small" color={verdictColorMap[detailAssessment.verdict as MovementVerdict]} label={verdictLabelMap[detailAssessment.verdict as MovementVerdict]} />
@@ -1041,37 +1750,12 @@ export const MovementPage = () => {
                 )}
               </Stack>
 
-              {/* cues */}
               {detailAssessment.cues?.length ? (
                 <Stack direction="row" spacing={1} flexWrap="wrap">
                   {detailAssessment.cues.map((cue) => <Chip key={cue} size="small" variant="outlined" label={cue} />)}
                 </Stack>
               ) : null}
 
-              {/* overlays */}
-              {detailAssessment.overlays?.length ? (
-                <Paper variant="outlined" sx={{ borderRadius: 2, p: 2 }}>
-                  <Stack spacing={1.5}>
-                    <Typography variant="caption" color="text.secondary">Visual overlays</Typography>
-                    <Stack spacing={1.5}>
-                      {detailAssessment.overlays.map((overlay, i) => (
-                        <OverlayPreviewCard
-                          key={`${detailAssessment.id}-overlay-${i}`}
-                          overlay={overlay}
-                          fallbackBefore={detailAssessment.frames?.[0]?.snapshotUrl}
-                          fallbackAfter={
-                            detailAssessment.frames && detailAssessment.frames.length > 1
-                              ? detailAssessment.frames[detailAssessment.frames.length - 1]?.snapshotUrl
-                              : detailAssessment.frames?.[0]?.snapshotUrl
-                          }
-                        />
-                      ))}
-                    </Stack>
-                  </Stack>
-                </Paper>
-              ) : null}
-
-              {/* phases */}
               {detailAssessment.phaseScores && (
                 <Paper variant="outlined" sx={{ borderRadius: 2, p: 2 }}>
                   <Stack spacing={1}>
@@ -1086,7 +1770,6 @@ export const MovementPage = () => {
                 </Paper>
               )}
 
-              {/* baseline compare */}
               {(typeof detailAssessment.asymmetryIndex0to100 === 'number' ||
                 (detailAssessment.deltaFromBaseline && Object.keys(detailAssessment.deltaFromBaseline).length > 0)) && (
                 <Paper variant="outlined" sx={{ borderRadius: 2, p: 2 }}>
@@ -1117,7 +1800,6 @@ export const MovementPage = () => {
                 </Paper>
               )}
 
-              {/* coaching plan & counterfactual */}
               {detailAssessment.coachingPlan && (
                 <Paper variant="outlined" sx={{ borderRadius: 2, p: 2 }}>
                   <Stack spacing={0.5}>
@@ -1186,301 +1868,816 @@ export const MovementPage = () => {
         </Box>
       </Backdrop>
 
-      <Stack spacing={4}>
-        {/* HERO / CAPTURE */}
-        <Box
-          sx={{
-            position: 'relative',
-            borderRadius: { xs: 4, md: 5 },
-            overflow: 'hidden',
-            display: 'flex',
-            alignItems: 'stretch',
-            gap: { xs: 3, md: 5 },
-            flexDirection: { xs: 'column', md: 'row' },
-            p: { xs: 3, md: 4 },
-            border: '1px solid rgba(28,62,217,0.14)',
-            background: 'linear-gradient(145deg, rgba(32, 58, 216, 0.18) 0%, rgba(16, 20, 48, 0.82) 55%, rgba(18, 21, 54, 0.88) 100%)',
-            color: '#fff',
-            boxShadow: '0 30px 60px rgba(17, 34, 120, 0.35)',
-            backdropFilter: 'blur(18px)',
-          }}
-          onDrop={onDrop}
-          onDragOver={onDragOver}
-        >
-          <Box sx={{ position: 'relative', zIndex: 2, flex: 1 }}>
-            <Typography variant="overline" sx={{ letterSpacing: '0.2em', opacity: 0.75 }}>MOVEMENT COACH</Typography>
-            <Typography variant="h4" fontWeight={700} sx={{ mt: 1 }}>Capture elite landing mechanics in real time</Typography>
-            <Typography variant="body1" sx={{ mt: 1.5, color: 'rgba(255,255,255,0.76)', maxWidth: 620 }}>
-              Auto-extract the landing, plant, and push-off frames, score mechanics instantly, and deliver concise coaching cues on the spot.
-            </Typography>
-            <Stack direction="row" spacing={2} sx={{ mt: 3 }}>
-              <Chip icon={<FiberManualRecordIcon sx={{ color: '#ff5f6d !important' }} />} label="Live capture" sx={{ bgcolor: 'rgba(255, 95, 109, 0.18)', borderColor: 'rgba(255, 95, 109, 0.3)', color: '#ffb3b8' }} variant="outlined" />
-              <Chip label="AI scoring & cueing" variant="outlined" sx={{ borderColor: 'rgba(90, 170, 255, 0.4)', color: '#a6c9ff' }} />
-              <Chip icon={<KeyboardIcon />} label="R = Record · Esc = Cancel · ⌘/Ctrl+V = Paste" size="small" sx={{ bgcolor: 'rgba(0,0,0,0.35)', color: '#fff' }} />
+      {/* HERO / HEADER */}
+      <Box
+        sx={(t) => ({
+          position: 'relative',
+          py: { xs: 5, md: 7 },
+          px: { xs: 2, md: 6 },
+          background:
+            t.palette.mode === 'light'
+              ? 'radial-gradient(1200px 300px at 20% -10%, rgba(99,245,197,0.20), transparent 60%), linear-gradient(180deg, #ffffff, #f6f8ff)'
+              : 'radial-gradient(1200px 300px at 20% -10%, rgba(99,245,197,0.08), transparent 60%), linear-gradient(180deg, #0b0f26, #0a0e20)',
+        })}
+      >
+        <Stack spacing={1} sx={{ maxWidth: 1400, mx: 'auto' }}>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }}>
+            <Stack spacing={1}>
+              <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 2 }}>
+                Movement coach
+              </Typography>
+              <Typography variant="h4" fontWeight={800} lineHeight={1.15}>
+                Movement Intelligence Console
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 720 }}>
+                Capture, analyze, and act on lower-extremity movement with a clear, coach-ready workflow.
+              </Typography>
             </Stack>
-          </Box>
-        </Box>
+            {latestComputed?.verdict && (
+              <Chip
+                color={verdictColorMap[latestComputed.verdict]}
+                sx={{ alignSelf: { xs: 'flex-start', md: 'center' }, fontWeight: 600 }}
+                label={`Latest verdict · ${verdictLabelMap[latestComputed.verdict]}`}
+              />
+            )}
+          </Stack>
 
-        <Grid container spacing={3}>
-          {/* LEFT: session + frames */}
-          <Grid item xs={12} md={7}>
-            <Card sx={{ overflow: 'hidden' }}>
-              {submitting && <LinearProgress />}
-              <CardContent sx={{ p: { xs: 3, md: 4 } }}>
-                <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1}>
-                  <Box>
-                    <Typography variant="h6">Session setup</Typography>
-                    <Typography variant="body2" color="text.secondary">Identify the athlete and environment before analysing mechanics.</Typography>
-                  </Box>
-                  <Chip label={`Drill · ${drillType.replace('_', ' ')}`} color="primary" />
-                </Stack>
-
-                <ErrorAlert message={error} />
-
-                <Stack spacing={3}>
-                  <TextField label="Athlete ID" placeholder="rb-12" value={athleteId} onChange={(e) => setAthleteId(e.target.value)} required />
-                  <TextField label="Drill type" select value={drillType} onChange={(e) => setDrillType(e.target.value as DrillType)}>
-                    {DRILL_TYPES.map((type) => (<MenuItem key={type} value={type}>{type.replace('_', ' ')}</MenuItem>))}
-                  </TextField>
-
-                  <Grid container spacing={2}>
-                    <Grid item xs={12} md={6}><TextField label="Surface" value={surface} onChange={(e) => setSurface(e.target.value)} /></Grid>
-                    <Grid item xs={6} md={3}><TextField label="Temp °F" value={temperatureF} onChange={(e) => setTemperatureF(e.target.value)} type="number" /></Grid>
-                    <Grid item xs={6} md={3}><TextField label="Humidity %" value={humidityPct} onChange={(e) => setHumidityPct(e.target.value)} type="number" /></Grid>
-                  </Grid>
-
-                  <TextField label="Environment notes" multiline minRows={2} value={environment} onChange={(e) => setEnvironment(e.target.value)} placeholder="High heat, turf, north endzone camera" />
-
-                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ xs: 'stretch', sm: 'center' }}>
-                    <Button variant="outlined" startIcon={<MyLocationIcon />} onClick={fetchEnvironmentSnapshot} disabled={autoWeatherLoading}>
-                      {autoWeatherLoading ? 'Fetching conditions…' : 'Auto-fill weather'}
-                    </Button>
-                    {autoWeatherTimestamp && <Chip label={`Updated ${formatDateTime(autoWeatherTimestamp)}`} variant="outlined" size="small" />}
-                  </Stack>
-                  {autoWeatherError && <Typography variant="caption" color="error">{autoWeatherError}</Typography>}
-
-                  <Divider sx={{ borderStyle: 'dashed' }} />
-
-                  {/* Capture toolkit */}
-                  <Stack spacing={2}>
-                    <Typography variant="subtitle1">Capture toolkit</Typography>
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} flexWrap="wrap" alignItems="flex-start">
-                      <Button variant="contained" startIcon={isRecording ? <StopCircleIcon /> : <VideocamIcon />} onClick={isRecording ? stopRecording : startRecording} disabled={!cameraSupported || processingVideo || uploadingMedia}>
-                        {isRecording ? 'Stop & analyse clip' : 'Record landing clip'}
-                      </Button>
-                      {cameraActive && (
-                        <Button variant="outlined" startIcon={<CancelIcon />} onClick={cancelRecording} disabled={processingVideo || uploadingMedia}>Cancel recording</Button>
-                      )}
-                      <Tooltip title="Upload a studio clip if you recorded externally"><span>
-                        <Button variant="outlined" startIcon={<VideocamIcon />} onClick={() => videoInputRef.current?.click()} disabled={processingVideo || uploadingMedia || isRecording}>Upload video file</Button>
-                      </span></Tooltip>
-                      <Tooltip title="Bring in a still shot or freeze-frame"><span>
-                        <Button variant="outlined" startIcon={<PhotoCameraIcon />} onClick={() => photoInputRef.current?.click()} disabled={processingVideo || uploadingMedia || isRecording}>Upload photo</Button>
-                      </span></Tooltip>
-                      <Tooltip title="Paste image or URL from clipboard (⌘/Ctrl+V)"><span>
-                        <Button variant="text" startIcon={<ContentPasteIcon />} disabled={processingVideo || uploadingMedia}>Paste from clipboard</Button>
-                      </span></Tooltip>
-                    </Stack>
-
-                    <ErrorAlert message={captureError} />
-
-                    {analyzingCapture && (
-                      <Paper
-                        elevation={0}
+          {/* KPI STRIP */}
+          {sessionStatCards.length > 0 && (
+            <Grid container spacing={2} sx={{ mt: 2 }}>
+              {sessionStatCards.map((card) => (
+                <Grid key={card.key} item xs={12} sm={6} md={3}>
+                  <Paper
+                    variant="outlined"
+                    sx={(theme) => ({
+                      borderRadius: 4,
+                      p: 2.25,
+                      height: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 1,
+                      background:
+                        theme.palette.mode === 'light'
+                          ? 'linear-gradient(160deg, rgba(255,255,255,0.92) 0%, rgba(241,244,253,0.85) 100%)'
+                          : 'linear-gradient(160deg, rgba(17, 24, 51, 0.82) 0%, rgba(8, 12, 30, 0.92) 100%)',
+                    })}
+                  >
+                    <Stack direction="row" spacing={1.25} alignItems="center">
+                      <Box
                         sx={{
-                          borderRadius: 3, p: { xs: 3, md: 3.5 },
-                          border: '1px solid rgba(17, 38, 146, 0.18)',
-                          background: 'linear-gradient(135deg, rgba(53,99,255,0.12) 0%, rgba(22,27,65,0.92) 65%)',
-                          color: '#fff', boxShadow: '0 18px 45px rgba(17, 38, 146, 0.28)',
+                          width: 34,
+                          height: 34,
+                          borderRadius: '50%',
+                          display: 'grid',
+                          placeItems: 'center',
+                          bgcolor: 'action.hover',
+                          border: '1px solid',
+                          borderColor: 'divider',
                         }}
                       >
-                        <Stack spacing={2} alignItems="flex-start">
-                          <Typography variant="subtitle1" fontWeight={600}>Analysing clip…</Typography>
-                          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.72)' }}>
-                            Extracting key frames and preparing them for the movement model.
-                          </Typography>
-                          <LinearProgress
-                            sx={{
-                              width: '100%', height: 8, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.18)',
-                              '& .MuiLinearProgress-bar': { borderRadius: 999, backgroundImage: 'linear-gradient(90deg, #63f5c5 0%, #3590ff 100%)' },
-                            }}
-                          />
-                        </Stack>
-                      </Paper>
+                        {card.icon}
+                      </Box>
+                      <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 1.5 }}>
+                        {card.label}
+                      </Typography>
+                    </Stack>
+                    <Typography variant="h4" fontWeight={800}>
+                      {card.value}
+                    </Typography>
+                    {card.trendLabel && (
+                      <Typography variant="caption" color={card.trendTone ?? 'text.secondary'}>
+                        {card.trendLabel}
+                      </Typography>
                     )}
+                    <Typography variant="caption" color="text.secondary" sx={{ mt: 'auto' }}>
+                      {card.caption}
+                    </Typography>
+                  </Paper>
+                </Grid>
+              ))}
+            </Grid>
+          )}
+        </Stack>
+      </Box>
 
-                    {!analyzingCapture && frameMode === 'summary' && validFrames.length > 0 ? (
-                      <Paper variant="outlined" sx={{ borderRadius: 3, border: '1px solid rgba(17, 38, 146, 0.16)', boxShadow: '0 16px 40px rgba(17, 38, 146, 0.12)', p: { xs: 3, md: 3.5 } }}>
-                        <Stack spacing={2.5}>
-                          <Stack direction="row" alignItems="center" justifyContent="space-between">
-                            <Box>
-                              <Typography variant="subtitle1" fontWeight={600}>{validFrames.length} key frame{validFrames.length > 1 ? 's' : ''} ready for scoring</Typography>
-                              <Typography variant="body2" color="text.secondary">The assistant will submit these automatically when you generate cues.</Typography>
-                            </Box>
-                            <Button size="small" variant="outlined" startIcon={<KeyboardIcon />} onClick={() => setFrameMode('edit')}>Fine-tune frames</Button>
+      {/* BODY */}
+      <Box sx={{ px: { xs: 2, md: 6 }, py: { xs: 4, md: 6 } }}>
+        <Stack spacing={3} sx={{ maxWidth: 1400, mx: 'auto' }}>
+
+          <Grid container spacing={3}>
+            {/* LEFT: TABBED FLOW */}
+            <Grid item xs={12} md={8}>
+              <Paper
+                variant="outlined"
+                sx={(t) => ({
+                  borderRadius: 4,
+                  p: 0,
+                  overflow: 'hidden',
+                  background:
+                    t.palette.mode === 'light'
+                      ? 'linear-gradient(180deg, rgba(255,255,255,0.86), rgba(248,250,255,0.9))'
+                      : 'linear-gradient(180deg, rgba(17,20,42,0.8), rgba(10,14,32,0.92))',
+                })}
+              >
+                <Box sx={{ px: { xs: 2, md: 3 }, pt: 2 }}>
+                  <Tabs
+                    value={leftTab}
+                    onChange={(_, v) => setLeftTab(v)}
+                    aria-label="workflow tabs"
+                    sx={{ '& .MuiTab-root': { textTransform: 'none', fontWeight: 600 } }}
+                  >
+                    <Tab value="setup" label="Setup" />
+                    <Tab value="capture" label="Capture" />
+                    <Tab value="frames" label={`Frames${validFrames.length ? ` (${validFrames.length})` : ''}`} />
+                  </Tabs>
+                </Box>
+
+                <Divider />
+
+                {/* SETUP */}
+                {leftTab === 'setup' && (
+                  <Stack spacing={3} sx={{ p: { xs: 2.5, md: 3.5 } }}>
+                    {submitting && <LinearProgress sx={{ borderRadius: 999 }} />}
+
+                    <ErrorAlert message={error} />
+
+                    <Grid container spacing={2.5}>
+                      <Grid item xs={12} md={6}>
+                        <Paper variant="outlined" sx={{ p: 2.5 }}>
+                          <Stack spacing={2}>
+                            <Typography variant="subtitle2" color="text.secondary" fontWeight={700}>
+                              Athlete & drill
+                            </Typography>
+                            <Autocomplete
+                              freeSolo
+                              options={athleteDirectory}
+                              loading={athleteDirectoryLoading}
+                              value={athleteDirectory.find((ath) => ath.id === athleteId) ?? null}
+                              inputValue={athleteInputValue}
+                              onInputChange={(_, newValue, reason) => {
+                                if (reason === 'reset') return;
+                                setAthleteInputValue(newValue);
+                                if (reason === 'clear') {
+                                  setAthleteId('');
+                                }
+                              }}
+                              onChange={(_, newValue) => handleAthleteSelect(newValue)}
+                              getOptionLabel={(option) =>
+                                typeof option === 'string' ? option : option.displayName ?? option.id
+                              }
+                              isOptionEqualToValue={(option, value) => option.id === value.id}
+                              noOptionsText={athleteDirectoryLoading ? 'Loading roster…' : 'No matches'}
+                              renderOption={(props, option) => (
+                                <li {...props}>
+                                  <Stack spacing={0}>
+                                    <Typography fontWeight={600}>{option.displayName ?? option.id}</Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                      {(option.team ?? '—') + ' • ' + option.id}
+                                    </Typography>
+                                  </Stack>
+                                </li>
+                              )}
+                              renderInput={(params) => (
+                                <TextField
+                                  {...params}
+                                  label="Select athlete"
+                                  placeholder="Start typing a name or ID"
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault();
+                                      handleAthleteInputCommit();
+                                    }
+                                  }}
+                                  InputProps={{
+                                    ...params.InputProps,
+                                    endAdornment: (
+                                      <>
+                                        {athleteDirectoryLoading ? (
+                                          <CircularProgress color="inherit" size={16} />
+                                        ) : null}
+                                        {params.InputProps.endAdornment}
+                                      </>
+                                    ),
+                                  }}
+                                />
+                              )}
+                            />
+                            {athleteDirectoryError && (
+                              <Typography variant="caption" color="error">
+                                {athleteDirectoryError}
+                              </Typography>
+                            )}
+                            <TextField
+                              label="Drill type"
+                              select
+                              value={drillType}
+                              onChange={(e) => setDrillType(e.target.value as DrillType)}
+                              fullWidth
+                            >
+                              {DRILL_TYPES.map((type) => (
+                                <MenuItem key={type} value={type}>
+                                  {type.replace('_', ' ')}
+                                </MenuItem>
+                              ))}
+                            </TextField>
                           </Stack>
-                          <Stack spacing={1.5}>
-                            {validFrames.map((frame, idx) => (
-                              <Paper key={frame.id} variant="outlined" sx={{ borderRadius: 2, p: 2, display: 'flex', alignItems: 'center', gap: 2, border: '1px solid rgba(13,74,255,0.12)', backgroundColor: 'rgba(53,99,255,0.04)' }}>
-                                <Avatar variant="rounded" sx={{ width: 60, height: 60, bgcolor: 'rgba(53,99,255,0.1)', color: 'primary.main', fontWeight: 600 }} src={/^https?:\/\//.test(frame.url) ? frame.url : undefined}>
-                                  {idx + 1}
+                        </Paper>
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <Paper variant="outlined" sx={{ p: 2.5, height: '100%' }}>
+                          <Stack spacing={2}>
+                            <Typography variant="subtitle2" color="text.secondary" fontWeight={700}>
+                              Environment
+                            </Typography>
+                            <TextField label="Surface" value={surface} onChange={(e) => setSurface(e.target.value)} />
+                            <Stack direction="row" spacing={1.5}>
+                              <TextField label="Temp °F" value={temperatureF} onChange={(e) => setTemperatureF(e.target.value)} type="number" />
+                              <TextField label="Humidity %" value={humidityPct} onChange={(e) => setHumidityPct(e.target.value)} type="number" />
+                            </Stack>
+                            <Button
+                              variant="outlined"
+                              startIcon={<MyLocationIcon />}
+                              onClick={fetchEnvironmentSnapshot}
+                              disabled={autoWeatherLoading}
+                            >
+                              {autoWeatherLoading ? 'Fetching conditions…' : 'Auto-fill from location'}
+                            </Button>
+                            {autoWeatherTimestamp && (
+                              <Typography variant="caption" color="text.secondary">
+                                Synced {formatDateTime(autoWeatherTimestamp)}
+                              </Typography>
+                            )}
+                            {autoWeatherError && <Typography variant="caption" color="error">{autoWeatherError}</Typography>}
+                          </Stack>
+                        </Paper>
+                      </Grid>
+                    </Grid>
+
+                    <TextField
+                      label="Additional context"
+                      multiline
+                      minRows={3}
+                      value={environment}
+                      onChange={(e) => setEnvironment(e.target.value)}
+                      placeholder="Camera high-left · fatigue session · post-practice recovery"
+                      fullWidth
+                    />
+                  </Stack>
+                )}
+
+                {/* CAPTURE */}
+                {leftTab === 'capture' && (
+                  <Box
+                    onDrop={captureUnlocked ? onDrop : undefined}
+                    onDragOver={captureUnlocked ? onDragOver : undefined}
+                    sx={(theme) => ({
+                      p: { xs: 2.5, md: 3.5 },
+                      borderRadius: 0,
+                      background:
+                        theme.palette.mode === 'light'
+                          ? 'linear-gradient(135deg, rgba(53,99,255,0.06) 0%, rgba(227,234,255,0.35) 100%)'
+                          : 'linear-gradient(135deg, rgba(34,45,94,0.6) 0%, rgba(13,18,41,0.82) 100%)',
+                    })}
+                  >
+                    {captureUnlocked ? (
+                      <Stack spacing={3}>
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                        <Button
+                          variant="contained"
+                          startIcon={isRecording ? <StopCircleIcon /> : <VideocamIcon />}
+                          onClick={isRecording ? stopRecording : startRecording}
+                          disabled={!captureUnlocked || !cameraSupported || processingVideo || uploadingMedia}
+                        >
+                          {isRecording ? 'Stop & analyze clip' : 'Live capture'}
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          startIcon={<AddPhotoAlternateIcon />}
+                          onClick={() => {
+                            if (!captureUnlocked || processingVideo || uploadingMedia || isRecording) return;
+                            videoInputRef.current?.click();
+                          }}
+                          disabled={!captureUnlocked || processingVideo || uploadingMedia || isRecording}
+                        >
+                          Upload media
+                        </Button>
+                        {wearableIntegrationActive && (
+                          <Button
+                            variant="outlined"
+                            startIcon={<SensorsIcon />}
+                            onClick={() => navigate('/wearables')}
+                            disabled={!captureUnlocked}
+                          >
+                            Connect wearable
+                          </Button>
+                        )}
+                        {cameraActive && (
+                          <Button variant="text" startIcon={<CancelIcon />} onClick={cancelRecording}>
+                            Cancel
+                          </Button>
+                        )}
+                      </Stack>
+
+                      <ErrorAlert message={captureError} />
+
+                      {analyzingCapture && (
+                        <Paper
+                          elevation={0}
+                          sx={{
+                            borderRadius: 3,
+                            p: { xs: 3, md: 3.5 },
+                            border: '1px solid rgba(17, 38, 146, 0.18)',
+                            background: 'linear-gradient(135deg, rgba(53,99,255,0.12) 0%, rgba(22,27,65,0.92) 65%)',
+                            color: '#fff',
+                            boxShadow: '0 18px 45px rgba(17, 38, 146, 0.28)',
+                          }}
+                        >
+                          <Stack spacing={2} alignItems="flex-start">
+                            <Typography variant="subtitle1" fontWeight={700}>Analyzing clip…</Typography>
+                            <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.72)' }}>
+                              Extracting key frames and preparing them for the movement model.
+                            </Typography>
+                            <LinearProgress
+                              sx={{
+                                width: '100%',
+                                height: 8,
+                                borderRadius: 999,
+                                backgroundColor: 'rgba(255,255,255,0.18)',
+                                '& .MuiLinearProgress-bar': { borderRadius: 999, backgroundImage: 'linear-gradient(90deg, #63f5c5 0%, #3590ff 100%)' },
+                              }}
+                            />
+                          </Stack>
+                        </Paper>
+                      )}
+
+                      {!analyzingCapture && (
+                        <Paper
+                          variant="outlined"
+                          sx={{
+                            borderRadius: 3,
+                            borderStyle: 'dashed',
+                            borderColor: 'rgba(17,38,146,0.25)',
+                            p: { xs: 3, md: 4 },
+                          }}
+                        >
+                          <Stack spacing={1}>
+                            <Typography fontWeight={700}>Drop zone</Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Drag & drop a clip or stills, or paste screenshots with ⌘/Ctrl + V. We’ll auto-label Landing, Plant, and Push-off.
+                            </Typography>
+                          </Stack>
+                        </Paper>
+                      )}
+                      </Stack>
+                    ) : (
+                      <Stack
+                        spacing={1.5}
+                        alignItems="center"
+                        justifyContent="center"
+                        sx={{ minHeight: 320, textAlign: 'center' }}
+                      >
+                        <SensorsIcon color="primary" sx={{ fontSize: 48 }} />
+                        <Typography variant="h6" fontWeight={600}>
+                          Select an athlete to start capture
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Pick an athlete in Setup to unlock camera tools and uploads.
+                        </Typography>
+                      </Stack>
+                    )}
+                  </Box>
+                )}
+
+                {/* FRAMES */}
+                {leftTab === 'frames' && (
+                  <Stack spacing={2.5} sx={{ p: { xs: 2.5, md: 3.5 } }}>
+                    {frameMode === 'summary' && validFrames.length > 0 ? (
+                      <>
+                        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }}>
+                          <Box>
+                            <Typography variant="subtitle1" fontWeight={700}>
+                              {validFrames.length} key frame{validFrames.length > 1 ? 's' : ''} captured
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              These frames will be submitted when you create the AI assessment.
+                            </Typography>
+                          </Box>
+                          <Stack direction="row" spacing={1}>
+                            <Button size="small" variant="outlined" startIcon={<KeyboardIcon />} onClick={() => setFrameMode('edit')}>
+                              Adjust frames
+                            </Button>
+                            <Button size="small" variant="text" startIcon={<ReplayIcon />} onClick={() => { setFrames([createFrameDraft()]); setFrameMode('edit'); }}>
+                              Retake
+                            </Button>
+                          </Stack>
+                        </Stack>
+                        <Grid container spacing={1.5}>
+                          {validFrames.map((frame, idx) => (
+                            <Grid key={frame.id} item xs={12} sm={6}>
+                              <Paper
+                                variant="outlined"
+                                sx={{
+                                  borderRadius: 3,
+                                  px: 2,
+                                  py: 1.5,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 2,
+                                }}
+                              >
+                                <Avatar
+                                  variant="rounded"
+                                  sx={{ width: 64, height: 64, borderRadius: 3 }}
+                                  src={/^https?:\/\//.test(frame.url) ? frame.url : undefined}
+                                >
+                                  {frame.label?.slice(0, 1) ?? idx + 1}
                                 </Avatar>
                                 <Stack spacing={0.5} flex={1}>
-                                  <Typography fontWeight={600}>{frame.label ?? `Frame ${idx + 1}`}</Typography>
-                                  <Typography variant="caption" color="text.secondary">Captured {formatDateTime(frame.capturedAt)}</Typography>
+                                  <Typography fontWeight={700}>{frame.label ?? `Frame ${idx + 1}`}</Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    {formatDateTime(frame.capturedAt)}
+                                  </Typography>
                                 </Stack>
                                 <Tooltip title="Copy URL">
-                                  <IconButton size="small" onClick={() => {
-                                    if (navigator?.clipboard?.writeText) {
-                                      navigator.clipboard.writeText(frame.url)
-                                        .then(() => setToast({ open: true, severity: 'info', msg: 'Frame URL copied' }))
-                                        .catch(() => setToast({ open: true, severity: 'warning', msg: 'Unable to copy URL automatically' }));
-                                    }
-                                  }}>
+                                  <IconButton
+                                    size="small"
+                                    onClick={() => {
+                                      if (navigator?.clipboard?.writeText) {
+                                        navigator.clipboard
+                                          .writeText(frame.url)
+                                          .then(() => setToast({ open: true, severity: 'info', msg: 'Frame URL copied' }))
+                                          .catch(() =>
+                                            setToast({
+                                              open: true,
+                                              severity: 'warning',
+                                              msg: 'Unable to copy URL automatically',
+                                            }),
+                                          );
+                                      }
+                                    }}
+                                  >
                                     <ContentPasteIcon fontSize="small" />
                                   </IconButton>
                                 </Tooltip>
                               </Paper>
-                            ))}
-                          </Stack>
-                          <Stack direction="row" spacing={1}>
-                            <Button startIcon={<ReplayIcon />} variant="text" onClick={() => { setFrames([createFrameDraft()]); setFrameMode('edit'); }}>Retake clip</Button>
-                            <Button startIcon={<AddPhotoAlternateIcon />} variant="text" onClick={() => setFrameMode('edit')}>Add or adjust frames</Button>
-                          </Stack>
-                        </Stack>
-                      </Paper>
-                    ) : (
-                      !analyzingCapture && (
-                        <Stack spacing={2}>
-                          {frames.map((frame, index) => (
-                            <Paper key={frame.id} variant="outlined" sx={{ borderRadius: 3, border: '1px solid rgba(13, 74, 255, 0.12)', boxShadow: '0 8px 30px rgba(13, 74, 255, 0.06)' }}>
-                              <CardContent sx={{ p: { xs: 2.5, md: 3 } }}>
-                                <Stack spacing={2}>
-                                  <Box display="flex" alignItems="center" gap={1}>
-                                    <Chip label={`Frame ${index + 1}`} color={index === 0 ? 'primary' : 'default'} size="small" />
-                                    {!!frame.label && <Chip label={frame.label} size="small" variant="outlined" />}
-                                    <Tooltip title="Remove frame"><IconButton size="small" onClick={() => setFrames((prev) => prev.filter((f) => f.id !== frame.id))}><DeleteIcon fontSize="small" /></IconButton></Tooltip>
-                                  </Box>
-                                  <Grid container spacing={2}>
-                                    <Grid item xs={12} md={7}>
-                                      <TextField label="Media URL" placeholder="https://..." value={frame.url} onChange={(e) => setFrames((prev) => prev.map((f) => (f.id === frame.id ? { ...f, url: e.target.value } : f)))} helperText="Upload stills or paste secure S3/HTTPS links." fullWidth />
-                                    </Grid>
-                                    <Grid item xs={12} md={5}>
-                                      <Stack direction="row" spacing={2} alignItems="center">
-                                        <Avatar variant="rounded" sx={{ width: 72, height: 72, bgcolor: 'background.default' }} src={/^https?:\/\//.test(frame.url) ? frame.url : undefined}>
-                                          {!frame.url && 'No preview'}
-                                        </Avatar>
-                                        <Stack spacing={1} flex={1}>
-                                          <TextField label="Label" placeholder="Landing frame" value={frame.label} onChange={(e) => setFrames((prev) => prev.map((f) => (f.id === frame.id ? { ...f, label: e.target.value } : f)))} />
-                                          <TextField label="Captured at" type="datetime-local" value={frame.capturedAt.slice(0, 16)} onChange={(e) => setFrames((prev) => prev.map((f) => (f.id === frame.id ? { ...f, capturedAt: new Date(e.target.value).toISOString() } : f)))} />
-                                        </Stack>
-                                      </Stack>
-                                    </Grid>
-                                  </Grid>
-                                </Stack>
-                              </CardContent>
-                            </Paper>
+                            </Grid>
                           ))}
-                          <Stack direction="row" spacing={1}>
-                            <Button startIcon={<AddPhotoAlternateIcon />} onClick={() => { setFrameMode('edit'); setFrames((prev) => [...prev, createFrameDraft()]); }} variant="text">Add another frame</Button>
-                            <Button startIcon={<ReplayIcon />} variant="text" onClick={() => { setFrames([createFrameDraft()]); setFrameMode('edit'); }}>Reset frames</Button>
-                          </Stack>
+                        </Grid>
+                      </>
+                    ) : (
+                      <>
+                        {frames.map((frame, index) => (
+                          <Paper key={frame.id} variant="outlined" sx={{ borderRadius: 3 }}>
+                            <CardContent sx={{ p: { xs: 2.5, md: 3 } }}>
+                              <Stack spacing={2}>
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <Chip label={`Frame ${index + 1}`} color={index === 0 ? 'primary' : 'default'} size="small" />
+                                  {!!frame.label && <Chip label={frame.label} size="small" variant="outlined" />}
+                                  <Tooltip title="Remove frame">
+                                    <IconButton size="small" onClick={() => setFrames((prev) => prev.filter((f) => f.id !== frame.id))}>
+                                      <DeleteIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                </Stack>
+                                <Grid container spacing={2}>
+                                  <Grid item xs={12} md={7}>
+                                    <TextField
+                                      label="Media URL"
+                                      placeholder="https://…"
+                                      value={frame.url}
+                                      onChange={(e) =>
+                                        setFrames((prev) =>
+                                          prev.map((f) => (f.id === frame.id ? { ...f, url: e.target.value } : f)),
+                                        )
+                                      }
+                                      helperText="Upload stills or paste secure S3/HTTPS links."
+                                      fullWidth
+                                    />
+                                  </Grid>
+                                  <Grid item xs={12} md={5}>
+                                    <Stack direction="row" spacing={2} alignItems="center">
+                                      <Avatar
+                                        variant="rounded"
+                                        sx={{ width: 72, height: 72, bgcolor: 'background.default' }}
+                                        src={/^https?:\/\//.test(frame.url) ? frame.url : undefined}
+                                      >
+                                        {!frame.url && 'No preview'}
+                                      </Avatar>
+                                      <Stack spacing={1} flex={1}>
+                                        <TextField
+                                          label="Label"
+                                          placeholder="Landing frame"
+                                          value={frame.label}
+                                          onChange={(e) =>
+                                            setFrames((prev) =>
+                                              prev.map((f) => (f.id === frame.id ? { ...f, label: e.target.value } : f)),
+                                            )
+                                          }
+                                        />
+                                        <TextField
+                                          label="Captured at"
+                                          type="datetime-local"
+                                          value={frame.capturedAt.slice(0, 16)}
+                                          onChange={(e) =>
+                                            setFrames((prev) =>
+                                              prev.map((f) =>
+                                                f.id === frame.id
+                                                  ? { ...f, capturedAt: new Date(e.target.value).toISOString() }
+                                                  : f,
+                                              ),
+                                            )
+                                          }
+                                        />
+                                      </Stack>
+                                    </Stack>
+                                  </Grid>
+                                </Grid>
+                              </Stack>
+                            </CardContent>
+                          </Paper>
+                        ))}
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                          <Button
+                            startIcon={<AddPhotoAlternateIcon />}
+                            onClick={() => {
+                              setFrameMode('edit');
+                              setFrames((prev) => [...prev, createFrameDraft()]);
+                            }}
+                            variant="text"
+                          >
+                            Add another frame
+                          </Button>
+                          <Button startIcon={<ReplayIcon />} variant="text" onClick={() => { setFrames([createFrameDraft()]); setFrameMode('edit'); }}>
+                            Reset frames
+                          </Button>
                         </Stack>
-                      )
+                        {frames.every((frame) => !frame.url.trim()) && (
+                          <Paper
+                            variant="outlined"
+                            sx={{
+                              borderRadius: 3,
+                              borderStyle: 'dashed',
+                              borderColor: 'rgba(17,38,146,0.35)',
+                              p: { xs: 3, md: 4 },
+                              backgroundColor: 'rgba(53,99,255,0.06)',
+                            }}
+                          >
+                            <Stack spacing={1}>
+                              <Typography fontWeight={700}>Quick tips</Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                Drag & drop a clip or stills here, or paste screenshots with ⌘/Ctrl + V. We’ll auto-label landing, plant, and push-off frames.
+                              </Typography>
+                            </Stack>
+                          </Paper>
+                        )}
+                      </>
                     )}
                   </Stack>
+                )}
+
+                {/* STICKY ACTION BAR */}
+                <Divider />
+                <Stack
+                  direction={{ xs: 'column', sm: 'row' }}
+                  spacing={1.5}
+                  alignItems={{ xs: 'stretch', sm: 'center' }}
+                  justifyContent="space-between"
+                  sx={{ p: { xs: 2, md: 3 }, position: 'sticky', bottom: 0, backdropFilter: 'blur(8px)', backgroundColor: 'background.paper' }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    {validFrames.length ? `${validFrames.length} frame${validFrames.length > 1 ? 's' : ''} ready` : 'No frames added yet'}
+                  </Typography>
+                  <Stack direction="row" spacing={1.25} justifyContent="flex-end">
+                    <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => { setFrames([createFrameDraft()]); setLeftTab('capture'); setFrameMode('edit'); }}>
+                      Reset
+                    </Button>
+                    <Button
+                      variant="contained"
+                      startIcon={<CheckCircleIcon />}
+                      onClick={handleSubmit}
+                      disabled={submitting || validFrames.length === 0 || !athleteId.trim()}
+                    >
+                      {submitting ? 'Creating assessment…' : 'Create AI assessment'}
+                    </Button>
+                  </Stack>
                 </Stack>
-              </CardContent>
+              </Paper>
+            </Grid>
 
-              <CardActions sx={{ justifyContent: 'space-between', px: 3, pb: 3 }}>
-                <Button variant="outlined" startIcon={<RefreshIcon />} onClick={loadHistory} disabled={loadingHistory}>Refresh history</Button>
-                <Button variant="contained" disabled={!canSubmit || submitting} onClick={handleSubmit} sx={{ minWidth: 220 }}>
-                  {submitting ? 'Scoring mechanics…' : 'Generate coaching cues'}
-                </Button>
-              </CardActions>
-            </Card>
-          </Grid>
+            {/* RIGHT: CONTEXT & HISTORY */}
+            <Grid item xs={12} md={4}>
+              {/* Latest */}
+              <Paper sx={{ p: { xs: 2.5, md: 3 }, borderRadius: 4 }}>
+                {latestAssessment ? (
+                  <Stack spacing={2}>
+                    <Stack direction="row" spacing={1.25} alignItems="center">
+                      <Box
+                        sx={{
+                          width: 38,
+                          height: 38,
+                          borderRadius: '50%',
+                          display: 'grid',
+                          placeItems: 'center',
+                          bgcolor: 'action.hover',
+                          border: '1px solid',
+                          borderColor: 'divider',
+                        }}
+                      >
+                        <QueryStatsIcon fontSize="small" />
+                      </Box>
+                      <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 2 }}>
+                        Latest assessment
+                      </Typography>
+                    </Stack>
+                    <Typography variant="h6" fontWeight={800}>
+                      {latestAssessment.overview?.headline ?? 'Movement assessment'}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {latestAssessment.overview?.summary ??
+                        'Review the newest AI cues, risk signals, and overlays before you brief the athlete.'}
+                    </Typography>
+                    <Stack direction="row" spacing={1} flexWrap="wrap">
+                      <Chip
+                        size="small"
+                        color={latestAssessment.riskRating >= 2 ? 'secondary' : 'success'}
+                        label={`Risk ${latestAssessment.riskRating}/3`}
+                      />
+                      {latestComputed?.verdict && (
+                        <Chip size="small" color={verdictColorMap[latestComputed.verdict]} label={verdictLabelMap[latestComputed.verdict]} />
+                      )}
+                      {typeof latestComputed?.viewScore === 'number' && (
+                        <Chip size="small" variant="outlined" label={`View ${(latestComputed.viewScore * 100).toFixed(0)}%`} />
+                      )}
+                    </Stack>
+                    {latestComputed?.cues?.length ? (
+                      <Stack direction="row" spacing={1} flexWrap="wrap">
+                        {latestComputed.cues.slice(0, 3).map((cue) => (
+                          <Chip key={`latest-cue-${cue}`} size="small" variant="outlined" label={cue} />
+                        ))}
+                      </Stack>
+                    ) : null}
+                    <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                      <Typography variant="caption" color="text.secondary">
+                        {formatDateTime(latestAssessment.createdAt ?? latestAssessment.updatedAt ?? new Date().toISOString())}
+                      </Typography>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        endIcon={<NorthEastIcon fontSize="small" />}
+                        onClick={() => setDetailAssessmentId(latestAssessment.id)}
+                      >
+                        Review
+                      </Button>
+                    </Stack>
+                  </Stack>
+                ) : (
+                  <Stack spacing={1.25}>
+                    <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 2 }}>
+                      Quick start
+                    </Typography>
+                    <Typography variant="h6" fontWeight={800}>
+                      Record your first assessment
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Drag in a clip or grab three stills—landing, plant, push-off. We’ll build cues and a coach-ready micro-plan.
+                    </Typography>
+                  </Stack>
+                )}
+              </Paper>
 
-          {/* RIGHT: history */}
-          <Grid item xs={12} md={5}>
-            <Card sx={{ height: '100%' }}>
-              {loadingHistory && <LinearProgress />}
-              <CardContent sx={{ p: { xs: 3, md: 4 } }}>
-                <Typography variant="h6" gutterBottom>Recent AI assessments</Typography>
-                <Typography variant="body2" color="text.secondary" gutterBottom>Tracks risk rating, coaching cues, and frame evidence for the last 10 submissions.</Typography>
+              {/* History */}
+              <Paper sx={{ p: { xs: 2.5, md: 3 }, borderRadius: 4, mt: 3 }}>
+                {loadingHistory && <LinearProgress sx={{ borderRadius: 999, mb: 2 }} />}
+                <Stack spacing={1}>
+                  <Typography variant="h6" fontWeight={800}>Recent assessments</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Last 10 with verdicts & camera confidence.
+                  </Typography>
+                </Stack>
 
-                <Stack spacing={2} sx={{ mt: 2 }}>
-                  {!loadingHistory && history.length === 0 && (<Typography color="text.secondary">No assessments recorded yet.</Typography>)}
+                <Stack spacing={2.25} sx={{ mt: 2 }}>
+                  {!loadingHistory && history.length === 0 && (
+                    <Typography variant="body2" color="text.secondary">
+                      Nothing yet—create an assessment to see it here.
+                    </Typography>
+                  )}
 
                   {history.map((assessment) => {
                     const { verdict, viewScore, viewLabel, uncertainty, proofTimestamp, cues } = getAssessmentComputed(assessment);
-                    const summaryText = assessment.overview?.summary ?? 'Open the assessment to review cues, metrics, overlays, and micro-plan details.';
-                    const cuesPreview = cues.slice(0, 3);
-                    return (
-                      <Paper key={assessment.id} variant="outlined" sx={{ borderRadius: 3, p: { xs: 2.5, md: 3 }, borderColor: 'divider' }}>
-                        <Stack spacing={1.5}>
-                          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }}>
-                            <Box>
-                              <Typography variant="overline" color="text.secondary">
-                                {assessment.drillType.replace('_', ' ')} • {formatDateTime(assessment.createdAt)}
-                              </Typography>
-                              <Typography variant="subtitle1" fontWeight={600}>
-                                {assessment.overview?.headline ?? 'Movement assessment'}
-                              </Typography>
-                            </Box>
-                            <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
-                              {verdict && <Chip size="small" color={verdictColorMap[verdict]} label={verdictLabelMap[verdict]} />}
-                              <Chip size="small" color={assessment.riskRating >= 2 ? 'secondary' : 'primary'} label={`Risk ${assessment.riskRating}/3`} />
-                              {typeof uncertainty === 'number' && <Chip size="small" variant="outlined" color="warning" label={`Uncertainty ${(uncertainty * 100).toFixed(0)}%`} />}
-                              {viewScore !== null && <Chip size="small" variant="outlined" label={`Confidence ${(viewScore * 100).toFixed(0)}%`} />}
-                              {viewLabel && <Chip size="small" variant="outlined" label={`View ${viewLabel}`} />}
-                            </Stack>
-                          </Stack>
+                    const summaryText =
+                      assessment.overview?.summary ?? 'Open to review cues, metrics, overlays, and micro-plan.';
 
-                          <Typography variant="body2" color="text.secondary" sx={{ display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 3, overflow: 'hidden' }}>
-                            {summaryText}
-                          </Typography>
+                  return (
+  <Paper
+    key={assessment.id}
+    variant="outlined"
+    sx={(t) => ({
+      ...safeCardSx(t),
+      backgroundImage:
+        'linear-gradient(140deg, rgba(53,99,255,0.06) 0%, rgba(99,245,197,0.06) 100%)',
+    })}
+  >
+    <Stack spacing={1.75} sx={{ minWidth: 0 }}>
+      {/* Header */}
+      <Stack
+        direction="row"
+        alignItems="flex-start"
+        justifyContent="space-between"
+        sx={{ gap: 1.25, flexWrap: 'wrap', minWidth: 0 }}
+      >
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 1, display: 'block' }}>
+            {assessment.drillType.replace('_', ' ')} • {formatDateTime(assessment.createdAt)}
+          </Typography>
+          <Typography variant="subtitle1" fontWeight={700} sx={clamp1}>
+            {assessment.overview?.headline ?? 'Movement assessment'}
+          </Typography>
+        </Box>
 
-                          {cuesPreview.length > 0 && (
-                            <Stack direction="row" spacing={1} flexWrap="wrap">
-                              {cuesPreview.map((cue) => <Chip key={`${assessment.id}-cue-${cue}`} size="small" variant="outlined" label={cue} />)}
-                            </Stack>
-                          )}
+        {/* Right chip cluster (wrap-safe) */}
+        <Box sx={chipWrapSx}>
+          {verdict && (
+            <Chip size="small" color={verdictColorMap[verdict]} label={verdictLabelMap[verdict]} />
+          )}
+          <Chip
+            size="small"
+            label={`Risk ${assessment.riskRating}/3`}
+            color={assessment.riskRating >= 2 ? 'secondary' : 'primary'}
+          />
+          {typeof uncertainty === 'number' && (
+            <Chip
+              size="small"
+              variant="outlined"
+              color="warning"
+              label={`Uncertainty ${(uncertainty * 100).toFixed(0)}%`}
+            />
+          )}
+          {viewScore !== null && (
+            <Chip size="small" variant="outlined" label={`Confidence ${(viewScore * 100).toFixed(0)}%`} />
+          )}
+          {viewLabel && <Chip size="small" variant="outlined" label={`View ${viewLabel}`} />}
+        </Box>
+      </Stack>
 
-                          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }}>
-                            <Typography variant="caption" color="text.secondary">
-                              Proof updated {proofTimestamp ? formatDateTime(proofTimestamp) : formatDateTime(assessment.updatedAt ?? assessment.createdAt)}
-                            </Typography>
-                            <Stack direction="row" spacing={1}>
-                              <Button size="small" variant="outlined" onClick={() => setDetailAssessmentId(assessment.id)}>View details</Button>
-                              <Button
-                                size="small"
-                                variant={assessment.proof?.fixAssigned ? 'contained' : 'outlined'}
-                                startIcon={<CheckCircleIcon />}
-                                onClick={() => handleQuickAssign(assessment)}
-                                disabled={assigningProofId === assessment.id}
-                              >
-                                {assessment.proof?.fixAssigned ? 'Assigned' : 'Quick assign'}
-                              </Button>
-                              <Button
-                                size="small"
-                                onClick={() => openCompletionDialog(assessment)}
-                                disabled={!!assessment.proof?.completion?.completed || completingProofId === assessment.id}
-                              >
-                                {assessment.proof?.completion?.completed ? 'Completed' : 'Log completion'}
-                              </Button>
-                            </Stack>
-                          </Stack>
-                        </Stack>
-                      </Paper>
-                    );
+      {/* Summary (clamped to 3 lines) */}
+      <Typography variant="body2" color="text.secondary" sx={clamp3}>
+        {summaryText}
+      </Typography>
+
+      {/* Cues row */}
+      {cues.length > 0 && (
+        <Box sx={chipWrapSx}>
+          {cues.slice(0, 3).map((cue) => (
+            <Chip key={`${assessment.id}-cue-${cue}`} size="small" variant="outlined" label={cue} />
+          ))}
+        </Box>
+      )}
+
+      {/* Footer */}
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="space-between"
+        sx={{ gap: 1, flexWrap: 'wrap', minWidth: 0 }}
+      >
+        <Typography variant="caption" color="text.secondary" sx={clamp2}>
+          Proof updated{' '}
+          {proofTimestamp ? formatDateTime(proofTimestamp) : formatDateTime(assessment.updatedAt ?? assessment.createdAt)}
+        </Typography>
+
+        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
+          <Button size="small" variant="outlined" onClick={() => setDetailAssessmentId(assessment.id)}>
+            View
+          </Button>
+          <Button
+            size="small"
+            variant={assessment.proof?.fixAssigned ? 'contained' : 'outlined'}
+            startIcon={<CheckCircleIcon />}
+            onClick={() => handleQuickAssign(assessment)}
+            disabled={assigningProofId === assessment.id}
+          >
+            {assessment.proof?.fixAssigned ? 'Assigned' : 'Assign'}
+          </Button>
+          <Button
+            size="small"
+            onClick={() => openCompletionDialog(assessment)}
+            disabled={!!assessment.proof?.completion?.completed || completingProofId === assessment.id}
+          >
+            {assessment.proof?.completion?.completed ? 'Completed' : 'Log'}
+          </Button>
+        </Stack>
+      </Stack>
+    </Stack>
+  </Paper>
+);
+
                   })}
                 </Stack>
-              </CardContent>
-            </Card>
+              </Paper>
+            </Grid>
           </Grid>
-        </Grid>
-      </Stack>
+        </Stack>
+      </Box>
     </>
   );
 };

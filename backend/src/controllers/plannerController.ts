@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   applyTeamPlan,
   getLatestTeamPlan,
+  getCoachTriageQueue,
+  compilePracticePlan,
   simulateTeamPlan,
 } from "../services/plannerService";
 import { TeamPlannerSimulationInput } from "../types/planner";
@@ -75,4 +77,22 @@ export const getPlannerLatest = async (req: Request, res: Response) => {
     return res.status(404).json({ error: "No plan found for team" });
   }
   return res.json({ plan });
+};
+
+export const getPlannerTriageQueue = async (req: Request, res: Response) => {
+  const team = req.query.team;
+  if (typeof team !== "string" || !team.trim()) {
+    return res.status(400).json({ error: "team query parameter is required" });
+  }
+  const queue = await getCoachTriageQueue(team.trim());
+  return res.json({ queue });
+};
+
+export const getPracticeCompiler = async (req: Request, res: Response) => {
+  const team = req.query.team;
+  if (typeof team !== "string" || !team.trim()) {
+    return res.status(400).json({ error: "team query parameter is required" });
+  }
+  const compiler = await compilePracticePlan(team.trim());
+  return res.json({ compiler });
 };

@@ -6,6 +6,7 @@ import {
   updateAdherence,
   simulateRisk,
   ingestRiskVideoFeatures,
+  ingestRiskWearableFeatures,
   getRiskAudit,
   getTeamRiskSnapshots,
 } from "../controllers/riskController";
@@ -20,6 +21,7 @@ riskRouter.get("/athlete/:athleteId", getRiskHistory);
 riskRouter.get("/team/:teamId", getTeamRiskSnapshots);
 riskRouter.post("/simulate", simulateRisk);
 riskRouter.post("/features/video", ingestRiskVideoFeatures);
+riskRouter.post("/features/wearable", ingestRiskWearableFeatures);
 riskRouter.get("/:snapshotId/audit", getRiskAudit);
 riskRouter.patch("/:snapshotId/acknowledge", acknowledgeRisk);
 riskRouter.patch("/:snapshotId/adherence", updateAdherence);

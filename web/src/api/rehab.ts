@@ -1,5 +1,10 @@
 import { apiClient, unwrap } from './client';
-import type { RehabAssessmentInput, RehabAssessmentRecord } from '@/types';
+import type {
+  RehabAssessmentInput,
+  RehabAssessmentRecord,
+  RehabAssessmentResultDTO,
+  RtsGateSummary,
+} from '@/types';
 
 const normalizeRehab = (assessment: RehabAssessmentRecord): RehabAssessmentRecord => ({
   ...assessment,
@@ -25,4 +30,27 @@ export const fetchRehabAssessment = (rehabAssessmentId: string) =>
     (res) => ({
       assessment: normalizeRehab(res.assessment),
     }),
+  );
+
+export const fetchRtsGateSummary = (
+  athleteId: string,
+  params: { sport: 'pivot' | 'non_pivot'; sex: 'female' | 'male'; age: number },
+) =>
+  unwrap(
+    apiClient.get<{ summary: RtsGateSummary }>(`/rehab/athlete/${athleteId}/rts`, {
+      params,
+    }),
+  ).then((res) => res.summary);
+
+export const submitLiveCaptureSession = (payload: {
+  athleteId: string;
+  surgicalSide: 'left' | 'right';
+  sessionDate?: string;
+  videos: RehabAssessmentInput['videos'];
+}) =>
+  unwrap(
+    apiClient.post<{ assessment: RehabAssessmentResultDTO; derivedInput: RehabAssessmentInput }>(
+      '/rehab/live-capture',
+      payload,
+    ),
   );

@@ -7,9 +7,13 @@ import {
   updateRiskSnapshotMeta,
   simulateRiskCounterfactuals,
   storeVideoRiskFeatures,
+  storeWearableRiskFeatures,
   getRiskSnapshotAudit,
   listLatestRiskSnapshotsForTeam,
 } from "../services/riskService";
+import { notifyAthlete } from "../services/notificationService";
+import type { DailyRiskInput } from "../types/risk";
+import { env } from "../config/env";
 
 const parseJSON = <T>(value: unknown): T | undefined => {
   if (value === null || value === undefined) return undefined;
@@ -59,6 +63,7 @@ const riskSchema = z.object({
   bodyWeightTrend: z.enum(["up", "down", "stable"]).optional(),
   menstrualPhase: z.enum(["follicular", "ovulatory", "luteal", "menstrual", "unspecified"]).optional(),
   notes: z.string().optional(),
+  wearableFeatures: z.any().optional(),
 });
 
 const simulateSchema = z.object({
@@ -88,6 +93,80 @@ const videoFeatureSchema = z.object({
     .refine((record) => Object.keys(record).length > 0, "Provide at least one feature value."),
 });
 
+type NormalizedWearableFeature = {
+  contactMs?: number;
+  stabilityMs?: number;
+  valgusIdx0to3?: number;
+  asymmetryPct?: number;
+  confidence0to1?: number;
+};
+
+const coerceOptionalNumber = (value: unknown): number | undefined => {
+  const num = Number(value);
+  return Number.isFinite(num) ? Number(num) : undefined;
+};
+
+const normaliseWearableFeaturePayload = (
+  payload: unknown,
+): DailyRiskInput["wearableFeatures"] | undefined => {
+  if (!Array.isArray(payload)) return undefined;
+  const mapped = payload
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const record = entry as Record<string, unknown>;
+      const normalized: NormalizedWearableFeature = {
+        contactMs: coerceOptionalNumber(record.contactMs ?? record.contact_ms),
+        stabilityMs: coerceOptionalNumber(record.stabilityMs ?? record.stability_ms),
+        valgusIdx0to3: coerceOptionalNumber(record.valgusIdx0to3 ?? record.valgus_idx_0_3),
+        asymmetryPct: coerceOptionalNumber(record.asymmetryPct ?? record.asymmetry_pct),
+        confidence0to1: coerceOptionalNumber(record.confidence0to1 ?? record.confidence_0_1),
+      };
+      if (Object.values(normalized).every((value) => value === undefined)) {
+        return null;
+      }
+      return normalized;
+    })
+    .filter((item): item is NormalizedWearableFeature => Boolean(item));
+
+  return mapped.length ? mapped : undefined;
+};
+
+type WearableFeatureWindowRequest = NormalizedWearableFeature & { windowTs: string };
+
+const convertWearableFeaturesToWindows = (payload: unknown): WearableFeatureWindowRequest[] => {
+  const windows: WearableFeatureWindowRequest[] = [];
+  if (!Array.isArray(payload)) return windows;
+
+  payload.forEach((rawEntry, index) => {
+    if (!rawEntry || typeof rawEntry !== "object") return;
+    const [normalized] = normaliseWearableFeaturePayload([rawEntry]) ?? [];
+    if (!normalized) return;
+
+    const record = rawEntry as Record<string, unknown>;
+    windows.push({
+      windowTs:
+        typeof record.windowTs === "string"
+          ? record.windowTs
+          : typeof record.window_ts === "string"
+          ? record.window_ts
+          : new Date(Date.now() - index * 250).toISOString(),
+      contactMs: normalized.contactMs,
+      stabilityMs: normalized.stabilityMs,
+      valgusIdx0to3: normalized.valgusIdx0to3,
+      asymmetryPct: normalized.asymmetryPct,
+      confidence0to1: normalized.confidence0to1,
+    });
+  });
+
+  return windows;
+};
+
+const wearableStoreSchema = z.object({
+  athleteId: z.string(),
+  sessionId: z.string().optional(),
+  features: z.array(z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()]))),
+});
+
 export const postDailyRisk = async (req: Request, res: Response) => {
   const parsed = riskSchema.safeParse(req.body);
 
@@ -95,7 +174,30 @@ export const postDailyRisk = async (req: Request, res: Response) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
 
-  const recommendation = await buildDailyRiskRecommendation(parsed.data);
+  const wearableFeatures = normaliseWearableFeaturePayload(
+    (req.body && (req.body.wearable_features ?? req.body.wearableFeatures)) ??
+      parsed.data.wearableFeatures,
+  );
+
+  const { wearableFeatures: _legacyWearable, ...rest } = parsed.data as Record<string, unknown>;
+
+  const recommendation = await buildDailyRiskRecommendation({
+    ...(rest as Omit<DailyRiskInput, "wearableFeatures">),
+    wearableFeatures,
+  });
+
+  notifyAthlete({
+    athleteId: recommendation.athleteId,
+    title: `Today's plan · ${recommendation.riskLevel.toUpperCase()}`,
+    body: recommendation.changeToday,
+    category: "daily_risk.plan",
+    payload: {
+      snapshotId: recommendation.snapshotId,
+      riskTrend: recommendation.riskTrend,
+    },
+  }).catch((error) => {
+    console.error("Failed to queue risk notification", error);
+  });
 
   return res.status(201).json(recommendation);
 };
@@ -127,7 +229,18 @@ export const acknowledgeRisk = async (req: Request, res: Response) => {
   }
 
   try {
-    await acknowledgeRiskSnapshot(snapshotId);
+    const snapshot = await acknowledgeRiskSnapshot(snapshotId);
+    if (snapshot) {
+      notifyAthlete({
+        athleteId: snapshot.athleteId,
+        title: "Coach acknowledged today's plan",
+        body: snapshot.changeToday ?? "Your mitigation plan was confirmed.",
+        category: "daily_risk.acknowledged",
+        payload: { snapshotId: snapshot.id, riskLevel: snapshot.riskLevel },
+      }).catch((error) => {
+        console.error("Failed to queue acknowledgment notification", error);
+      });
+    }
     return res.status(200).json({ acknowledged: true });
   } catch (error) {
     return res.status(404).json({ error: (error as Error).message });
@@ -198,13 +311,32 @@ export const simulateRisk = async (req: Request, res: Response) => {
 };
 
 export const ingestRiskVideoFeatures = async (req: Request, res: Response) => {
-  const parsed = videoFeatureSchema.safeParse(req.body);
+  const parsed = videoFeatureSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
 
   await storeVideoRiskFeatures(parsed.data.athleteId, parsed.data.features);
-  return res.status(204).send();
+  return res.status(202).json({ stored: Object.keys(parsed.data.features).length });
+};
+
+export const ingestRiskWearableFeatures = async (req: Request, res: Response) => {
+  if (!env.WEARABLES_ENABLED || env.WEARABLES_MODE === "off") {
+    return res.status(404).json({ error: "Wearable integration is disabled" });
+  }
+
+  const parsed = wearableStoreSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+
+  const windows = convertWearableFeaturesToWindows(parsed.data.features);
+  if (!windows.length) {
+    return res.status(400).json({ error: "Provide at least one wearable feature window." });
+  }
+
+  await storeWearableRiskFeatures(parsed.data.athleteId, windows);
+  return res.status(202).json({ stored: windows.length });
 };
 
 export const getRiskAudit = async (req: Request, res: Response) => {

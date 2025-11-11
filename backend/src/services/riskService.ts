@@ -14,9 +14,69 @@ import { env } from "../config/env";
 import { prisma } from "../db/prisma";
 import { ensureAthlete } from "./athleteService";
 import { estimateHeatIndex } from "../utils/plannerHeuristics";
+import type { WearableFeatureOut } from "./wearableService";
+import { CycleShareScope } from "../generated/prisma/client";
+import { createAutomationCaseEvent } from "./caseChannelService";
 
 type VideoFeatureEntry = { features: Record<string, unknown>; recordedAt: Date };
+type WearableFeatureEntry = { features: WearableFeatureOut[]; recordedAt: Date };
 const videoFeatureCache = new Map<string, VideoFeatureEntry>();
+const wearableFeatureCache = new Map<string, WearableFeatureEntry>();
+
+type RiskFeatureEnvelope = {
+  video?: { payload: Record<string, unknown>; recordedAt: string };
+  wearable?: { payload: WearableFeatureOut[]; recordedAt: string };
+};
+
+const parseRiskFeatureEnvelope = (raw: unknown): RiskFeatureEnvelope => {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  const record = raw as Record<string, unknown>;
+  if (record.video || record.wearable) {
+    const envelope: RiskFeatureEnvelope = {};
+    if (record.video && typeof record.video === "object") {
+      const video = record.video as Record<string, unknown>;
+      if ("payload" in video && video.payload && typeof video.payload === "object") {
+        envelope.video = {
+          payload: video.payload as Record<string, unknown>,
+          recordedAt: typeof video.recordedAt === "string" ? video.recordedAt : new Date().toISOString(),
+        };
+      }
+    }
+    if (record.wearable && typeof record.wearable === "object") {
+      const wearable = record.wearable as Record<string, unknown>;
+      if ("payload" in wearable && Array.isArray(wearable.payload)) {
+        envelope.wearable = {
+          payload: wearable.payload as WearableFeatureOut[],
+          recordedAt: typeof wearable.recordedAt === "string" ? wearable.recordedAt : new Date().toISOString(),
+        };
+      }
+    }
+    return envelope;
+  }
+
+  // Legacy structure: treat entire record as video features
+  return {
+    video: { payload: record, recordedAt: new Date().toISOString() },
+  };
+};
+
+const upsertRiskFeatureEnvelope = async (athleteId: string, mutate: (envelope: RiskFeatureEnvelope) => RiskFeatureEnvelope) => {
+  const existing = await prisma.riskFeatureCache.findUnique({ where: { athleteId } });
+  const envelope = parseRiskFeatureEnvelope(existing?.features ?? {});
+  const next = mutate(envelope);
+  await prisma.riskFeatureCache.upsert({
+    where: { athleteId },
+    update: {
+      features: next as Prisma.InputJsonValue,
+    },
+    create: {
+      athleteId,
+      features: next as Prisma.InputJsonValue,
+    },
+  });
+};
 
 const getVideoFeatureEntry = async (athleteId: string): Promise<VideoFeatureEntry | null> => {
   const cached = videoFeatureCache.get(athleteId);
@@ -25,12 +85,29 @@ const getVideoFeatureEntry = async (athleteId: string): Promise<VideoFeatureEntr
   const record = await prisma.riskFeatureCache.findUnique({ where: { athleteId } });
   if (!record) return null;
 
-  const features = (record.features ?? {}) as Record<string, unknown>;
+  const envelope = parseRiskFeatureEnvelope(record.features);
+  if (!envelope.video) return null;
   const entry: VideoFeatureEntry = {
-    features,
-    recordedAt: record.updatedAt ?? new Date(),
+    features: envelope.video.payload,
+    recordedAt: new Date(envelope.video.recordedAt ?? record.updatedAt ?? new Date()),
   };
   videoFeatureCache.set(athleteId, entry);
+  return entry;
+};
+
+const getWearableFeatureEntry = async (athleteId: string): Promise<WearableFeatureEntry | null> => {
+  const cached = wearableFeatureCache.get(athleteId);
+  if (cached) return cached;
+
+  const record = await prisma.riskFeatureCache.findUnique({ where: { athleteId } });
+  if (!record) return null;
+  const envelope = parseRiskFeatureEnvelope(record.features);
+  if (!envelope.wearable) return null;
+  const entry: WearableFeatureEntry = {
+    features: envelope.wearable.payload,
+    recordedAt: new Date(envelope.wearable.recordedAt ?? record.updatedAt ?? new Date()),
+  };
+  wearableFeatureCache.set(athleteId, entry);
   return entry;
 };
 
@@ -277,9 +354,68 @@ const inferTrend = (averageScore: number | null, newScore: number): RiskTrend =>
   return "flat";
 };
 
+type WearableSummary = {
+  medianContactMs?: number;
+  medianStabilityMs?: number;
+  medianValgusIdx?: number;
+  maxValgusIdx?: number;
+  medianAsymmetryPct?: number;
+  medianConfidence?: number;
+  windowCount: number;
+};
+
+const median = (values: number[]): number | undefined => {
+  if (!values.length) return undefined;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    const leftIndex = Math.max(0, mid - 1);
+    const rightIndex = Math.min(sorted.length - 1, mid);
+    const left = sorted[leftIndex] ?? 0;
+    const right = sorted[rightIndex] ?? left;
+    return (left + right) / 2;
+  }
+  return sorted[mid];
+};
+
+const summariseWearableFeatures = (features: WearableFeatureOut[] | undefined, limit = 8): WearableSummary | null => {
+  if (!features || !features.length) return null;
+  const recent = features.slice(-limit);
+  const contacts = recent.map((f) => f.contactMs).filter((value): value is number => Number.isFinite(value));
+  const stability = recent.map((f) => f.stabilityMs).filter((value): value is number => Number.isFinite(value));
+  const valgus = recent.map((f) => f.valgusIdx0to3).filter((value): value is number => Number.isFinite(value));
+  const asymmetry = recent.map((f) => f.asymmetryPct).filter((value): value is number => Number.isFinite(value));
+  const confidence = recent.map((f) => f.confidence0to1).filter((value): value is number => Number.isFinite(value));
+
+  return {
+    medianContactMs: median(contacts),
+    medianStabilityMs: median(stability),
+    medianValgusIdx: median(valgus),
+    maxValgusIdx: valgus.length ? Math.max(...valgus) : undefined,
+    medianAsymmetryPct: median(asymmetry),
+    medianConfidence: median(confidence),
+    windowCount: recent.length,
+  };
+};
+
+const inlineWearableFeaturesToWindows = (
+  features?: DailyRiskInput["wearableFeatures"],
+): WearableFeatureOut[] => {
+  if (!features || !features.length) return [];
+  return features.map((entry, index) => ({
+    windowTs: new Date(Date.now() - index * 250).toISOString(),
+    contactMs: entry.contactMs ?? undefined,
+    stabilityMs: entry.stabilityMs ?? undefined,
+    valgusIdx0to3: entry.valgusIdx0to3 ?? undefined,
+    asymmetryPct: entry.asymmetryPct ?? undefined,
+    confidence0to1: entry.confidence0to1 ?? undefined,
+  }));
+};
+
 const mapDriversFromInput = (
   input: DailyRiskInput,
   videoFeatures?: Record<string, unknown>,
+  wearableSummary?: WearableSummary | null,
 ): { labels: string[]; scores: Record<string, number> } => {
   const drivers: string[] = [];
   const driverScores: Record<string, number> = {};
@@ -311,12 +447,108 @@ const mapDriversFromInput = (
     driverScores.video_trunk = 0.6;
   }
 
+  if (wearableSummary) {
+    const conf = wearableSummary.medianConfidence ?? 0;
+    if (wearableSummary.maxValgusIdx !== undefined && wearableSummary.maxValgusIdx >= 2 && conf >= 0.55) {
+      drivers.push("Wearable: dynamic valgus load high");
+      driverScores.wearable_valgus = Number(Math.min(1, (wearableSummary.maxValgusIdx + conf) / 4).toFixed(2));
+    }
+    if (wearableSummary.medianStabilityMs !== undefined && wearableSummary.medianStabilityMs > 420 && conf >= 0.5) {
+      drivers.push("Wearable: slow landing stabilization");
+      driverScores.wearable_stability = Number(Math.min(1, wearableSummary.medianStabilityMs / 800).toFixed(2));
+    }
+    if (wearableSummary.medianAsymmetryPct !== undefined && wearableSummary.medianAsymmetryPct >= 12 && conf >= 0.5) {
+      drivers.push("Wearable: asymmetry trending high");
+      driverScores.wearable_asymmetry = Number(Math.min(1, wearableSummary.medianAsymmetryPct / 30).toFixed(2));
+    }
+  }
+
   if (drivers.length === 0) {
     drivers.push("standard workload profile");
     driverScores.load = 0.2;
   }
 
   return { labels: drivers, scores: driverScores };
+};
+
+const elevateRiskLevel = (level: RiskLevel): RiskLevel => {
+  if (level === "green") return "yellow";
+  if (level === "yellow") return "red";
+  return "red";
+};
+
+const applyWearableAdjustments = (
+  recommendation: DailyRiskRecommendation,
+  summary?: WearableSummary | null,
+): DailyRiskRecommendation => {
+  if (!summary || !summary.windowCount) {
+    return recommendation;
+  }
+
+  const confidence = summary.medianConfidence ?? 0;
+  const next = { ...recommendation };
+  const drivers = [...(next.drivers ?? [])];
+  const driverScores = { ...(next.driverScores ?? {}) };
+
+  const ensureDriver = (label: string) => {
+    if (!drivers.includes(label)) {
+      drivers.push(label);
+    }
+  };
+
+  let adjustedRisk = next.riskLevel;
+
+  if (confidence >= 0.6 && (summary.maxValgusIdx ?? 0) >= 2) {
+    ensureDriver("Wearable: valgus load spike");
+    driverScores.wearable_valgus = Math.max(driverScores.wearable_valgus ?? 0, 0.72);
+    adjustedRisk = elevateRiskLevel(adjustedRisk);
+  }
+
+  if (confidence >= 0.6 && (summary.medianStabilityMs ?? 0) > 520) {
+    ensureDriver("Wearable: delayed stabilization");
+    driverScores.wearable_stability = Math.max(
+      driverScores.wearable_stability ?? 0,
+      Math.min(1, (summary.medianStabilityMs ?? 0) / 800),
+    );
+    adjustedRisk = elevateRiskLevel(adjustedRisk);
+  }
+
+  if (confidence >= 0.55 && (summary.medianAsymmetryPct ?? 0) >= 15) {
+    ensureDriver("Wearable: asymmetry trending high");
+    driverScores.wearable_asymmetry = Math.max(
+      driverScores.wearable_asymmetry ?? 0,
+      Math.min(1, (summary.medianAsymmetryPct ?? 0) / 30),
+    );
+  }
+
+  next.riskLevel = adjustedRisk;
+  if (adjustedRisk !== recommendation.riskLevel && next.riskTrend !== "up") {
+    next.riskTrend = "up";
+  }
+  next.drivers = drivers;
+  next.driverScores = driverScores;
+  if (next.rawModelOutput && typeof next.rawModelOutput === "object") {
+    (next.rawModelOutput as Record<string, unknown>).wearable_adjusted = {
+      summary,
+      previousRiskLevel: recommendation.riskLevel,
+      adjustedRiskLevel: adjustedRisk,
+    };
+  }
+  return next;
+};
+
+const appendPhaseSmartDriver = (
+  recommendation: DailyRiskRecommendation,
+  cyclePrivacy?: { shareScope: CycleShareScope; lastSharedPhase: string | null } | null,
+) => {
+  if (!cyclePrivacy || cyclePrivacy.shareScope !== CycleShareScope.SHARE_LABEL) return recommendation;
+  if (!cyclePrivacy.lastSharedPhase) return recommendation;
+  const label = `Phase-smart warmup active (${cyclePrivacy.lastSharedPhase})`;
+  const drivers = recommendation.drivers ?? [];
+  if (!drivers.includes(label)) {
+    recommendation.drivers = [...drivers, label];
+  }
+  return recommendation;
 };
 
 const RISK_USER_PROMPT = (
@@ -326,6 +558,7 @@ const RISK_USER_PROMPT = (
   recentLevels: string[],
   environmentFlags: string[],
   videoFeatureSnapshot?: Record<string, unknown>,
+  wearableSummary?: WearableSummary | null,
 ) => `
 Athlete context:
   id: ${input.athleteId}
@@ -349,6 +582,11 @@ ${
     ? `Latest_video_features: ${JSON.stringify(videoFeatureSnapshot).slice(0, 400)}`
     : "Latest_video_features: none provided"
 }
+${
+  wearableSummary
+    ? `Wearable_summary: ${JSON.stringify(wearableSummary)}`
+    : "Wearable_summary: none provided"
+}
 
 Return JSON (DailyRiskRecommendation schema) including:
 - risk_level (green/yellow/red)
@@ -370,13 +608,18 @@ const buildMockRiskRecommendation = (
     baseUncertainty: number;
     environmentFlags: string[];
     videoFeatures?: Record<string, unknown>;
+    wearableSummary?: WearableSummary | null;
   },
 ): DailyRiskRecommendation => {
   const total = calculateHeuristicScore(input);
   const riskLevel = scoreToRiskLevel(total);
   const riskScore = RISK_LEVEL_SCORES[riskLevel];
   const riskTrend = inferTrend(context.averageScore, riskScore);
-  const { labels: drivers, scores: driverScores } = mapDriversFromInput(input, context.videoFeatures);
+  const { labels: drivers, scores: driverScores } = mapDriversFromInput(
+    input,
+    context.videoFeatures,
+    context.wearableSummary,
+  );
 
   const changeTodayMap: Record<RiskLevel, string> = {
     red: "Replace full-speed cutting with landing mechanics circuit; cap high-load reps at 6 and monitor heat breaks.",
@@ -416,6 +659,7 @@ const buildMockRiskRecommendation = (
       source: "mock",
       heuristicScore: total,
       videoFeatures: context.videoFeatures ?? null,
+      wearableSummary: context.wearableSummary ?? null,
     },
   };
 };
@@ -424,6 +668,9 @@ export const buildDailyRiskRecommendation = async (
   input: DailyRiskInput,
 ): Promise<DailyRiskRecommendation> => {
   await ensureAthlete(input.athleteId, input.athleteName ?? input.athleteId);
+  const cyclePrivacy = await prisma.cyclePrivacySetting.findUnique({
+    where: { athleteId: input.athleteId },
+  });
 
   const recentSnapshots = await prisma.riskSnapshot.findMany({
     where: { athleteId: input.athleteId },
@@ -441,16 +688,23 @@ export const buildDailyRiskRecommendation = async (
   const recentLevelsText = recentSnapshots.map((s) => s.riskLevel);
   const videoFeatureEntry = await getVideoFeatureEntry(input.athleteId);
   const videoFeatures = videoFeatureEntry?.features;
+  const wearableFeatureEntry = await getWearableFeatureEntry(input.athleteId);
+  const cachedWearableFeatures = wearableFeatureEntry ? wearableFeatureEntry.features : [];
+  const inlineWearableWindows = inlineWearableFeaturesToWindows(input.wearableFeatures);
+  const wearableSummary = summariseWearableFeatures([...cachedWearableFeatures, ...inlineWearableWindows]);
 
   const client = getOpenAIClient();
 
   if (!client || env.USE_OPENAI_MOCKS) {
-    const mock = buildMockRiskRecommendation(input, {
+    const mockBase = buildMockRiskRecommendation(input, {
       averageScore,
       baseUncertainty,
       environmentFlags,
       videoFeatures,
+      wearableSummary,
     });
+    appendPhaseSmartDriver(mockBase, cyclePrivacy);
+    const mock = applyWearableAdjustments(mockBase, wearableSummary);
     await persistRiskSnapshot(input, mock);
     return mock;
   }
@@ -472,6 +726,7 @@ export const buildDailyRiskRecommendation = async (
                 recentLevelsText,
                 environmentFlags,
                 videoFeatures,
+                wearableSummary,
               ),
             },
           ],
@@ -531,23 +786,36 @@ export const buildDailyRiskRecommendation = async (
         ...parsed,
         heat_index_hint: heatIndex,
         video_features_hint: videoFeatures ?? null,
+        wearable_summary_hint: wearableSummary ?? null,
       },
     };
 
-    await persistRiskSnapshot(input, result);
+    appendPhaseSmartDriver(result, cyclePrivacy);
 
-    return result;
+    const wearableAdjusted = applyWearableAdjustments(result, wearableSummary);
+    await persistRiskSnapshot(input, wearableAdjusted);
+    return wearableAdjusted;
   } catch (error) {
     console.error("OpenAI risk classification failed", error);
-    const fallback = buildMockRiskRecommendation(input, {
+    const fallbackBase = buildMockRiskRecommendation(input, {
       averageScore,
       baseUncertainty,
       environmentFlags,
       videoFeatures,
+      wearableSummary,
     });
+    appendPhaseSmartDriver(fallbackBase, cyclePrivacy);
+    const fallback = applyWearableAdjustments(fallbackBase, wearableSummary);
     await persistRiskSnapshot(input, fallback);
     return fallback;
   }
+};
+
+const toTrustGrade = (uncertainty?: number | null) => {
+  if (uncertainty === undefined || uncertainty === null) return "B";
+  if (uncertainty <= 0.2) return "A";
+  if (uncertainty <= 0.35) return "B";
+  return "C";
 };
 
 const persistRiskSnapshot = async (input: DailyRiskInput, result: DailyRiskRecommendation) => {
@@ -583,6 +851,38 @@ const persistRiskSnapshot = async (input: DailyRiskInput, result: DailyRiskRecom
       rawModelOutput: JSON.stringify(result.rawModelOutput ?? {}),
     },
   });
+  await recordRiskCaseEvent(input, result);
+};
+
+const recordRiskCaseEvent = async (input: DailyRiskInput, result: DailyRiskRecommendation) => {
+  try {
+    const athlete = await prisma.athlete.findUnique({
+      where: { id: input.athleteId },
+      select: { team: true },
+    });
+    await createAutomationCaseEvent(
+      input.athleteId,
+      {
+        eventType: "risk",
+        title: `Risk ${result.riskLevel.toUpperCase()}`,
+        summary: result.rationale,
+        trustGrade: toTrustGrade(result.uncertainty0to1),
+        nextAction: result.changeToday,
+        pinned: result.riskLevel === "red",
+        metadata: {
+          riskTrend: result.riskTrend,
+          drivers: result.drivers?.slice?.(0, 3),
+          uncertainty: result.uncertainty0to1 ?? null,
+        },
+      },
+      {
+        team: athlete?.team ?? null,
+        actor: { role: "Risk Twin" },
+      },
+    );
+  } catch (error) {
+    console.warn("Failed to create risk case event", error);
+  }
 };
 
 export const listRiskSnapshots = (athleteId: string, limit = 30) =>
@@ -643,6 +943,12 @@ export const acknowledgeRiskSnapshot = (snapshotId: string) =>
   prisma.riskSnapshot.update({
     where: { id: snapshotId },
     data: { recommendationAcknowledged: true },
+    select: {
+      id: true,
+      athleteId: true,
+      changeToday: true,
+      riskLevel: true,
+    },
   });
 
 export const updateRiskSnapshotMeta = (
@@ -668,18 +974,21 @@ export const updateRiskSnapshotMeta = (
 };
 
 export const storeVideoRiskFeatures = async (athleteId: string, features: Record<string, unknown>) => {
-  const entry: VideoFeatureEntry = { features, recordedAt: new Date() };
-  videoFeatureCache.set(athleteId, entry);
-  await prisma.riskFeatureCache.upsert({
-    where: { athleteId },
-    update: {
-      features: features as Prisma.InputJsonValue,
-    },
-    create: {
-      athleteId,
-      features: features as Prisma.InputJsonValue,
-    },
-  });
+  const recordedAt = new Date();
+  videoFeatureCache.set(athleteId, { features, recordedAt });
+  await upsertRiskFeatureEnvelope(athleteId, (envelope) => ({
+    ...envelope,
+    video: { payload: features, recordedAt: recordedAt.toISOString() },
+  }));
+};
+
+export const storeWearableRiskFeatures = async (athleteId: string, features: WearableFeatureOut[]) => {
+  const recordedAt = new Date();
+  wearableFeatureCache.set(athleteId, { features, recordedAt });
+  await upsertRiskFeatureEnvelope(athleteId, (envelope) => ({
+    ...envelope,
+    wearable: { payload: features, recordedAt: recordedAt.toISOString() },
+  }));
 };
 
 const applyHeuristicTweak = (input: DailyRiskInput, tweak: string): DailyRiskInput => {

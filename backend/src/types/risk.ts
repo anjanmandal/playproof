@@ -12,6 +12,13 @@ export interface DailyRiskInput {
   bodyWeightTrend?: "up" | "down" | "stable";
   menstrualPhase?: "follicular" | "ovulatory" | "luteal" | "menstrual" | "unspecified";
   notes?: string;
+  wearableFeatures?: Array<{
+    contactMs?: number;
+    stabilityMs?: number;
+    valgusIdx0to3?: number;
+    asymmetryPct?: number;
+    confidence0to1?: number;
+  }>;
 }
 
 export type RiskLevel = "green" | "yellow" | "red";

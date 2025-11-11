@@ -1,5 +1,9 @@
 import { Request, Response } from "express";
-import { listAthletes, getAthleteDashboard } from "../services/athleteService";
+import {
+  listAthletes,
+  getAthleteDashboard,
+  getAthleteProgressMetrics,
+} from "../services/athleteService";
 
 export const getAthletes = async (_req: Request, res: Response) => {
   const athletes = await listAthletes();
@@ -19,6 +23,16 @@ export const getAthleteDetail = async (req: Request, res: Response) => {
   }
 
   return res.json({ athlete: serializeAthleteDetail(athlete) });
+};
+
+export const getAthleteProgress = async (req: Request, res: Response) => {
+  const { athleteId } = req.params;
+  if (!athleteId) {
+    return res.status(400).json({ error: "athleteId is required" });
+  }
+
+  const metrics = await getAthleteProgressMetrics(athleteId);
+  return res.json({ metrics });
 };
 
 const serializeAthleteSummary = (athlete: any) => ({

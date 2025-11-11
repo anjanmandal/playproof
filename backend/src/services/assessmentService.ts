@@ -65,6 +65,74 @@ const parseJsonField = <T>(value: unknown): T | undefined => {
   return undefined;
 };
 
+const clampInt = (value: number, min: number, max: number) => {
+  if (!Number.isFinite(value)) return min;
+  const rounded = Math.round(value);
+  if (rounded < min) return min;
+  if (rounded > max) return max;
+  return rounded;
+};
+
+const coerceBoolean = (value: unknown): boolean | undefined => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+  }
+  return undefined;
+};
+
+const normalizeRiskRating = (value: unknown): number => {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return clampInt(numeric, 0, 3);
+  }
+  return 0;
+};
+
+const DEFAULT_METRICS: MovementAssessmentResult["metrics"] = {
+  kneeValgusScore: 0,
+  trunkLeanOutsideBOS: false,
+  footPlantOutsideCOM: false,
+};
+
+const normalizeMetrics = (value: unknown): MovementAssessmentResult["metrics"] => {
+  if (!value || typeof value !== "object") {
+    return { ...DEFAULT_METRICS };
+  }
+
+  const source = value as Record<string, unknown>;
+  const kneeValgusSource =
+    source.kneeValgusScore ?? source.knee_valgus_score ?? source["knee-valgus-score"];
+
+  const kneeValgusScore = Number(kneeValgusSource);
+  const trunkLean =
+    coerceBoolean(source.trunkLeanOutsideBOS) ??
+    coerceBoolean(source.trunk_lean_outside_bos) ??
+    coerceBoolean(source["trunk-lean-outside-bos"]);
+  const footPlant =
+    coerceBoolean(source.footPlantOutsideCOM) ??
+    coerceBoolean(source.foot_plant_outside_com) ??
+    coerceBoolean(source["foot-plant-outside-com"]);
+
+  return {
+    kneeValgusScore: clampInt(kneeValgusScore, 0, 3),
+    trunkLeanOutsideBOS: trunkLean ?? DEFAULT_METRICS.trunkLeanOutsideBOS,
+    footPlantOutsideCOM: footPlant ?? DEFAULT_METRICS.footPlantOutsideCOM,
+  };
+};
+
+const normalizeCues = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    const cues = value.filter((cue): cue is string => typeof cue === "string" && cue.trim().length > 0);
+    if (cues.length) return cues;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    return [value.trim()];
+  }
+  return ["No reliable cues available due to capture quality."];
+};
+
 const buildBandSummary = (delta: Record<string, unknown> | null | undefined): MovementBandWindow[] => {
   if (!delta || typeof delta !== "object") return [];
 
@@ -1008,7 +1076,7 @@ export const createMovementAssessment = async (
     );
 
     const response = await (client.responses as any).create({
-      model: env.NODE_ENV === "production" ? "gpt-4.1" : "gpt-4.1-mini",
+      model: env.NODE_ENV === "production" ? "gpt-4" : "gpt-4.1-mini",
       input: [
         {
           role: "system",
@@ -1040,6 +1108,9 @@ export const createMovementAssessment = async (
       throw new Error("Unable to parse OpenAI response for movement assessment");
     }
 
+    const riskRating = normalizeRiskRating(parsed.riskRating);
+    const cues = normalizeCues(parsed.cues);
+    const metrics = normalizeMetrics(parsed.metrics);
     const phaseScores = parsePhaseScores(parsed.phase_scores);
     const riskSignals = parseRiskSignals(parsed.riskSignals ?? parsed.risk_signals);
     const viewQuality = parseViewQuality(parsed.view_quality ?? parsed.viewQuality);
@@ -1056,9 +1127,9 @@ export const createMovementAssessment = async (
       assessmentId: randomUUID(),
       athleteId: input.athleteId,
       drillType: input.drillType,
-      riskRating: parsed.riskRating,
-      cues: parsed.cues,
-      metrics: parsed.metrics,
+      riskRating,
+      cues,
+      metrics,
       overview: parsed.overview,
       riskSignals,
       coachingPlan: parsed.coachingPlan,

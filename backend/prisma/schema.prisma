@@ -19,6 +19,12 @@ enum Role {
   ADMIN
 }
 
+enum CycleShareScope {
+  OFF
+  PRIVATE
+  SHARE_LABEL
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -51,6 +57,35 @@ model Athlete {
   rehabAssessments RehabAssessment[]
   users            User[]
   contacts         AthleteContact[]
+  notifications    Notification[]
+  cyclePrivacy    CyclePrivacySetting?
+  cycleShareLogs  CycleShareLog[]
+  planProgress    AthletePlanProgress?
+  homeSessionProofs HomeSessionProof[]
+  caseEvents       CaseEvent[]
+}
+
+model CyclePrivacySetting {
+  id                   String           @id @default(cuid())
+  athlete              Athlete          @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  athleteId            String           @unique
+  shareScope           CycleShareScope  @default(OFF)
+  lastSharedPhase      String?
+  lastSharedConfidence String?
+  lastSharedAt         DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+}
+
+model CycleShareLog {
+  id               String   @id @default(cuid())
+  athlete          Athlete  @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  athleteId        String
+  phase            String
+  confidenceBucket String
+  createdAt        DateTime @default(now())
+
+  @@index([athleteId, createdAt])
 }
 
 model AthleteContact {
@@ -64,6 +99,19 @@ model AthleteContact {
   role       Role
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+}
+
+model AthletePlanProgress {
+  id                 String   @id @default(cuid())
+  athlete            Athlete  @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  athleteId          String   @unique
+  capacityIndex      Int      @default(60)
+  consecutiveAGrades Int      @default(0)
+  lastProgressionAt  DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([athleteId])
 }
 
 model MovementAssessment {
@@ -185,6 +233,29 @@ model RiskSnapshot {
   nextRepCheck               Json?
   cohortPercentile0to100     Float?
   environmentPolicyFlags     Json?
+  sourcePlanId               String?
+  sourceSimulationId         String?
+
+  @@index([sourcePlanId])
+  @@index([sourceSimulationId])
+}
+
+model Notification {
+  id         String   @id @default(cuid())
+  athlete    Athlete  @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  athleteId  String
+  title      String
+  body       String
+  category   String?
+  channel    String   @default("push")
+  payload    Json?
+  status     String   @default("queued")
+  lastError  String?
+  sentAt     DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([athleteId])
 }
 
 model RehabAssessment {
@@ -201,9 +272,27 @@ model RehabAssessment {
   parentSummary        String
   clinicianNotes       String
   rawModelOutput       String?
+  inputSnapshot        Json?
+  formGrade            String?           @default("B")
+  formCue              String?
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
   videos               RehabVideo[]
+}
+
+model HomeSessionProof {
+  id          String   @id @default(cuid())
+  athlete     Athlete  @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  athleteId   String
+  blockKey    String
+  clipUrl     String
+  sessionDate DateTime
+  minutes     Int?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([athleteId, sessionDate])
+  @@unique([athleteId, blockKey, sessionDate])
 }
 
 model RehabVideo {
@@ -239,6 +328,48 @@ model AudienceRewrite {
   createdAt     DateTime @default(now())
 }
 
+model WearableDevice {
+  id         String            @id @default(cuid())
+  athleteId  String?
+  type       String
+  side       String?
+  fwVersion  String?
+  lastSeenAt DateTime?
+  nickname   String?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+}
+
+model WearableSession {
+  id          String            @id @default(cuid())
+  athleteId   String
+  deviceIds   Json?
+  drillType   String
+  surface     String?
+  tempF       Int?
+  humidityPct Int?
+  startedAt   DateTime
+  endedAt     DateTime?
+  features    WearableFeature[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+}
+
+model WearableFeature {
+  id             String           @id @default(cuid())
+  sessionId      String
+  windowTs       DateTime
+  contactMs      Int?
+  stabilityMs    Int?
+  valgusIdx0to3  Int?
+  asymmetryPct   Float?
+  yawSpike       Float?
+  confidence0to1 Float?
+  meta           Json?
+  session        WearableSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt      DateTime         @default(now())
+}
+
 model RiskFeatureCache {
   athleteId String @id
   features  Json
@@ -267,4 +398,30 @@ model CoachTeam {
   createdAt DateTime @default(now())
 
   @@unique([coachId, teamId])
+}
+
+model CaseEvent {
+  id          String   @id @default(cuid())
+  athlete     Athlete  @relation(fields: [athleteId], references: [id], onDelete: Cascade)
+  athleteId   String
+  team        String?
+  eventType   String
+  title       String
+  summary     String?
+  trustGrade  String?
+  role        String
+  actorId     String?
+  actorName   String?
+  pinned      Boolean  @default(false)
+  nextAction  String?
+  attachments Json?
+  metadata    Json?
+  mentions    Json?
+  consentFlag String?
+  visibility  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([athleteId, createdAt])
+  @@index([team, createdAt])
 }

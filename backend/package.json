@@ -10,7 +10,8 @@
     "lint": "tsc --noEmit",
     "prisma:generate": "prisma generate --config prisma.config.ts",
     "db:apply": "bash -lc 'for file in prisma/migrations/*/migration.sql; do DATABASE_URL=\"${DATABASE_URL:-file:./dev.db}\" npx prisma db execute --file \"$file\" --schema prisma/schema.prisma --config prisma.config.ts; done'",
-    "seed": "bash -lc 'DATABASE_URL=\"${DATABASE_URL:-file:./dev.db}\" ts-node --transpile-only prisma/seed.ts'"
+    "seed": "bash -lc 'DATABASE_URL=\"${DATABASE_URL:-file:./dev.db}\" ts-node --transpile-only prisma/seed.ts'",
+    "sim:wearable": "ts-node src/sim/wearableSimulator.ts"
   },
   "keywords": [],
   "author": "",

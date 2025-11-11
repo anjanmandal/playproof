@@ -4,6 +4,8 @@ import {
   evaluateRehabClearance,
   listRehabAssessments,
   getRehabAssessmentDetail,
+  getRtsGateSummary,
+  processLiveCapture,
 } from "../services/rehabService";
 
 const rehabSchema = z.object({
@@ -52,6 +54,40 @@ const rehabSchema = z.object({
       }),
     })
     .optional(),
+  crossoverHop: z
+    .object({
+      injuredDistance: z.number(),
+      healthyDistance: z.number(),
+    })
+    .optional(),
+  yBalance: z
+    .object({
+      injuredComposite: z.number(),
+      healthyComposite: z.number(),
+    })
+    .optional(),
+  psychological: z
+    .object({
+      aclRsiScore: z.number().min(0).max(100),
+    })
+    .optional(),
+  strengthToBw: z.number().min(0).optional(),
+});
+
+const liveCaptureSchema = z.object({
+  athleteId: z.string(),
+  surgicalSide: z.enum(["left", "right"]),
+  sessionDate: z.string().optional(),
+  videos: z
+    .array(
+      z.object({
+        id: z.string(),
+        testType: z.enum(["single_leg_hop", "triple_hop", "squat", "lunge"]),
+        url: z.string().url(),
+        capturedAt: z.string(),
+      }),
+    )
+    .min(1),
 });
 
 export const postRehabAssessment = async (req: Request, res: Response) => {
@@ -62,6 +98,18 @@ export const postRehabAssessment = async (req: Request, res: Response) => {
   }
 
   const result = await evaluateRehabClearance(parsed.data);
+
+  return res.status(201).json(result);
+};
+
+export const postRehabLiveCapture = async (req: Request, res: Response) => {
+  const parsed = liveCaptureSchema.safeParse(req.body);
+
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+
+  const result = await processLiveCapture(parsed.data);
 
   return res.status(201).json(result);
 };
@@ -97,6 +145,30 @@ export const getRehabDetail = async (req: Request, res: Response) => {
   }
 
   return res.json({ assessment: serializeRehabAssessment(assessment) });
+};
+
+const rtsQuerySchema = z.object({
+  sport: z.enum(["pivot", "non_pivot"]).optional(),
+  sex: z.enum(["female", "male"]).optional(),
+  age: z.coerce.number().min(12).max(60).optional(),
+});
+
+export const getRtsGateSummaryHandler = async (req: Request, res: Response) => {
+  const { athleteId } = req.params;
+  if (!athleteId) {
+    return res.status(400).json({ error: "athleteId is required" });
+  }
+  const parsed = rtsQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+  const summary = await getRtsGateSummary({
+    athleteId,
+    sport: parsed.data.sport,
+    sex: parsed.data.sex,
+    age: parsed.data.age,
+  });
+  return res.json({ summary });
 };
 
 const serializeRehabAssessment = (assessment: any) => ({

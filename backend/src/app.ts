@@ -12,6 +12,14 @@ import { mediaRouter } from "./routes/media";
 import { athleteRouter } from "./routes/athletes";
 import { mediaRoot } from "./config/storage";
 import { plannerRouter } from "./routes/planner";
+import { wearableRouter } from "./routes/wearables";
+import { env } from "./config/env";
+import { notificationRouter } from "./routes/notifications";
+import { homeSessionRouter } from "./routes/homeSession";
+import { edgeCoachRouter } from "./routes/edgeCoach";
+import { caseChannelRouter } from "./routes/caseChannel";
+import { evidenceRouter } from "./routes/evidence";
+import { researchRouter } from "./routes/research";
 
 const app = express();
 
@@ -36,6 +44,15 @@ app.use("/rehab", rehabRouter);
 app.use("/audience", audienceRouter);
 app.use("/athletes", athleteRouter);
 app.use("/planner", plannerRouter);
+app.use("/notifications", notificationRouter);
+app.use("/home", homeSessionRouter);
+app.use("/edge-coach", edgeCoachRouter);
+app.use("/case-channel", caseChannelRouter);
+app.use("/evidence", evidenceRouter);
+app.use("/research", researchRouter);
+if (env.WEARABLES_ENABLED && env.WEARABLES_MODE !== "off") {
+  app.use("/wearables", wearableRouter);
+}
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

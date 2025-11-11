@@ -1,5 +1,7 @@
 import { apiClient, unwrap } from './client';
 import type {
+  CoachTriageQueuePayload,
+  PracticeCompilerPayload,
   TeamPlannerSimulationInput,
   TeamPlannerSimulationResult,
   TeamPlanRecord,
@@ -25,3 +27,17 @@ export const fetchLatestTeamPlan = (team: string) =>
       params: { team },
     }),
   ).then((res) => res.plan);
+
+export const fetchCoachTriageQueue = (team: string) =>
+  unwrap(
+    apiClient.get<{ queue: CoachTriageQueuePayload }>('/planner/triage', {
+      params: { team },
+    }),
+  ).then((res) => res.queue);
+
+export const compilePracticePlan = (team: string) =>
+  unwrap(
+    apiClient.get<{ compiler: PracticeCompilerPayload }>('/planner/compile', {
+      params: { team },
+    }),
+  ).then((res) => res.compiler);

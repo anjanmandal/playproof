@@ -12,6 +12,10 @@ const rawEnvSchema = z.object({
   JWT_SECRET: z.string().min(6).optional(),
   MEDIA_UPLOAD_DIR: z.string().optional(),
   PUBLIC_URL: z.string().optional(),
+  WEARABLES_ENABLED: z.enum(["true", "false"]).optional(),
+  WEARABLES_MODE: z.enum(["mock", "ble", "off"]).optional(),
+  NOTIFICATIONS_WEBHOOK_URL: z.string().url().optional(),
+  EVIDENCE_SECRET: z.string().optional(),
 });
 
 const parsed = rawEnvSchema.safeParse(process.env);
@@ -26,6 +30,9 @@ const base = parsed.data;
 export const env = {
   ...base,
   USE_OPENAI_MOCKS: base.USE_OPENAI_MOCKS === "true",
+  WEARABLES_ENABLED: base.WEARABLES_ENABLED ? base.WEARABLES_ENABLED === "true" : false,
+  WEARABLES_MODE:
+    base.WEARABLES_ENABLED && base.WEARABLES_ENABLED === "true" ? base.WEARABLES_MODE ?? "mock" : "off",
 };
 
 if (!env.OPENAI_API_KEY && !env.USE_OPENAI_MOCKS) {

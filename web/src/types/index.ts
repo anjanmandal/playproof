@@ -235,6 +235,8 @@ export interface RiskSnapshot {
   nextRepCheck?: NextRepCheck;
   cohortPercentile0to100?: number | null;
   environmentPolicyFlags?: string[];
+  sourcePlanId?: string | null;
+  sourceSimulationId?: string | null;
 }
 
 export interface TeamRiskSnapshot extends RiskSnapshot {
@@ -317,6 +319,40 @@ export interface RankedTweak {
   recommendedFor: string[];
 }
 
+export type HeatClockStatus = 'safe' | 'caution' | 'danger';
+
+export interface HeatClockEntry {
+  time: string;
+  heatIndex: number;
+  status: HeatClockStatus;
+  recommendation: string;
+}
+
+export interface FairnessGuardGroup {
+  label: string;
+  sampleSize: number;
+  planConfidence: number;
+}
+
+export interface FairnessGuardSummary {
+  needsIntervention: boolean;
+  groups: FairnessGuardGroup[];
+  alerts: string[];
+}
+
+export interface AccessRouterRecommendation {
+  athleteId: string;
+  displayName: string;
+  reason: string;
+  recommendedAction: string;
+}
+
+export interface AccessRouterSummary {
+  flaggedAthletes: AccessRouterRecommendation[];
+  transportDifficulty?: string;
+  nextSteps: string;
+}
+
 export interface AthletePlanInsight {
   athleteId: string;
   displayName: string;
@@ -324,6 +360,8 @@ export interface AthletePlanInsight {
   riskLevel: string;
   riskScore: number;
   riskTrend?: string | null;
+  planConfidence: number;
+  needsVerification: boolean;
   expectedDelta: number;
   recommendedTweaks: string[];
   substitutions: Array<{
@@ -339,6 +377,17 @@ export interface AthletePlanInsight {
     required: boolean;
     focus: string;
   };
+  phaseSmart?: {
+    mode: Exclude<ShareScope, 'off'>;
+    label?: string | null;
+    confidence?: string | null;
+  };
+  progression: {
+    capacityIndex: number;
+    consecutiveAGrades: number;
+    lastProgressionAt?: string | null;
+    action: ProgressAction;
+  };
 }
 
 export interface CompiledSessionBlock {
@@ -347,12 +396,30 @@ export interface CompiledSessionBlock {
   location: 'indoor' | 'turf' | 'grass';
   focus: string;
   hydrationBreak?: boolean;
+  difficultyIndex?: number;
+}
+
+export type ProgressAction = 'step_up' | 'deload' | 'steady';
+
+export interface CapacityCurve {
+  averageCapacity: number;
+  nextStep: ProgressAction;
 }
 
 export interface TeamPlannerSimulationResult {
+  simulationId: string;
   team: string;
   generatedAt: string;
   input: TeamPlannerSimulationInput;
+  heatClock: HeatClockEntry[];
+  parishFairness: FairnessGuardSummary;
+  accessRouter: AccessRouterSummary;
+  planConfidence: number;
+  verificationCandidates: Array<{
+    athleteId: string;
+    displayName: string;
+    planConfidence: number;
+  }>;
   environmentFlags: string[];
   heatIndex?: number;
   rankedTweaks: RankedTweak[];
@@ -362,6 +429,7 @@ export interface TeamPlannerSimulationResult {
     hydrationSchedule: number[];
     summary: string;
   };
+  capacityCurve: CapacityCurve;
   totalExpectedDelta: number;
 }
 
@@ -375,7 +443,342 @@ export interface TeamPlanRecord {
   createdAt: string;
 }
 
+export type CoachTriageSeverity = 'high' | 'medium' | 'low';
+export type CoachTriageCategory = 'risk' | 'rehab' | 'environment' | 'adherence';
+
+export interface CoachTriageItem {
+  id: string;
+  athleteId: string;
+  displayName: string;
+  severity: CoachTriageSeverity;
+  category: CoachTriageCategory;
+  reason: string;
+  actionLabel: string;
+  actionUrl: string;
+  updatedAt: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CoachTriageQueuePayload {
+  team: string;
+  refreshedAt: string;
+  items: CoachTriageItem[];
+}
+
+export interface PracticeCompilerPayload {
+  planId: string;
+  team: string;
+  sessionDate?: string | null;
+  summary: string;
+  script: string;
+  shareCode: string;
+  hydrationCalls: number[];
+  blocks: Array<{
+    name: string;
+    location: 'indoor' | 'turf' | 'grass';
+    minutes: number;
+    focus: string;
+    difficultyIndex?: number;
+  }>;
+  generatedAt: string;
+}
+
+export interface CaseEvent {
+  id: string;
+  athleteId: string;
+  team?: string | null;
+  eventType: string;
+  title: string;
+  summary?: string | null;
+  trustGrade?: string | null;
+  role: string;
+  actorId?: string | null;
+  actorName?: string | null;
+  pinned: boolean;
+  nextAction?: string | null;
+  attachments?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
+  mentions?: string[] | null;
+  consentFlag?: string | null;
+  visibility?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CaseChannelResponse {
+  events: CaseEvent[];
+  pinnedNextAction: CaseEvent | null;
+  availableTypes: string[];
+  availableRoles: string[];
+}
+
+export interface EvidencePackResponse {
+  evidenceId: string;
+  downloadUrl: string;
+  viewerLogUrl: string;
+  expiresAt: string;
+}
+
+export interface EvidenceViewLogEntry {
+  id: string;
+  viewer: string;
+  viewedAt: string;
+}
+
+export interface EvidenceCard {
+  id: string;
+  title: string;
+  takeaway: string;
+  bullets: string[];
+  limitations: string[];
+  citations: Array<{
+    title: string;
+    authors: string;
+    year: number;
+    doi?: string;
+    url?: string;
+    levelOfEvidence: string;
+  }>;
+}
+
+export interface ResearchPaper {
+  paperId: string;
+  title: string;
+  journal: string;
+  year: number;
+  authors: string;
+  abstract: string;
+  doi?: string;
+  tags: string[];
+  levelOfEvidence: string;
+  impactTag: string;
+}
+
+export interface HomeSessionPlanBlock {
+  key: string;
+  title: string;
+  focus: string;
+  sets: number;
+  reps: number;
+  minutes: number;
+  intensity: string;
+  cues: string;
+}
+
+export interface HomeSessionPlanResponse {
+  athleteId: string;
+  blocks: HomeSessionPlanBlock[];
+  context: {
+    formGrade: 'A' | 'B' | 'C';
+    formCue: string;
+    limbSymmetryScore: number | null;
+    lastAssessmentAt: string | null;
+    planSoftened: boolean;
+    sorenessSource: number;
+    sorenessAuto: number | null;
+  };
+  completion: {
+    targetMinutes: number;
+    rescueAvailable: boolean;
+  };
+  verification: {
+    metricsOnly: boolean;
+    confidence: number;
+  };
+  streak: {
+    days: number;
+  };
+  proofs: Record<
+    string,
+    {
+      clipUrl: string;
+      capturedAt: string;
+    }
+  >;
+  insights?: {
+    summary: string;
+    timestamp: string;
+  };
+}
+
+export interface WearableInsightMetrics {
+  valgus: number;
+  impact: number;
+  decel: number;
+  asymmetry: number;
+  cutDensity: number;
+  playerLoad: number;
+  frameRate: number;
+  motionQuality: number;
+  bleStrength: number;
+  trust: 'A' | 'B' | 'C';
+}
+
+export interface WearableDeviceSnapshot {
+  id: string;
+  role: string;
+  label: string;
+  paired: boolean;
+  streaming: boolean;
+  battery: number;
+  firmware?: string;
+}
+
+export interface WearableInsightRequest {
+  athleteId?: string;
+  metrics: WearableInsightMetrics;
+  devices: WearableDeviceSnapshot[];
+}
+
+export interface WearableInsightResponse {
+  summary: string;
+  cues: string[];
+  statusChip: string;
+  confidence: number;
+  watchouts?: string[];
+  generatedAt: string;
+}
+
+export interface NotificationRecord {
+  id: string;
+  athleteId: string;
+  title: string;
+  body: string;
+  category?: string | null;
+  channel: string;
+  payload?: Record<string, unknown> | null;
+  status: string;
+  lastError?: string | null;
+  sentAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AthleteProgressMetrics {
+  movementTrend: Array<{
+    id: string;
+    createdAt: string;
+    verdict?: string | null;
+    verdictScore: number;
+    riskRating?: number | null;
+    cueCount: number;
+    fixAssigned: boolean;
+    microPlanCompleted: boolean;
+  }>;
+  riskTrend: Array<{
+    id: string;
+    createdAt: string;
+    riskLevel: string;
+    riskScore: number;
+    riskTrend?: string | null;
+    uncertainty0to1?: number | null;
+    adherence0to1?: number | null;
+    sourcePlanId?: string | null;
+    sourceSimulationId?: string | null;
+  }>;
+  microPlanStats: {
+    assigned: number;
+    completed: number;
+    completionRate: number;
+  };
+  verificationStats: {
+    better: number;
+    same: number;
+    worse: number;
+    pending: number;
+  };
+  plannerImpacts: Array<{
+    snapshotId: string;
+    planId: string;
+    simulationId?: string | null;
+    beforeScore: number;
+    afterScore: number;
+    delta: number;
+    createdAt: string;
+  }>;
+}
+
 export type RehabTestType = 'single_leg_hop' | 'triple_hop' | 'squat' | 'lunge';
+
+export type Phase = 'menstrual' | 'follicular' | 'ovulatory' | 'luteal' | 'unsure';
+export type ShareScope = 'off' | 'private' | 'share_label';
+
+export interface CycleSignals {
+  lastPeriodISO?: string;
+  avgCycleDays?: number;
+  symptoms?: Array<'cramp' | 'fatigue' | 'migraine' | 'heavy_flow' | 'none'>;
+  hrvTrend?: 'up' | 'down' | 'flat';
+  tempTrend?: 'up' | 'down' | 'flat';
+  contraception?: 'none' | 'combined_ocp' | 'iud' | 'implant' | 'other';
+}
+
+export interface PhaseEstimate {
+  phase: Phase;
+  confidence0to1: number;
+  reasons: string[];
+}
+
+export interface PhasePolicy {
+  warmupExtraMin: number;
+  cutDensityDelta: number;
+  landingFocus: boolean;
+  cueVigilance: 'normal' | 'high';
+}
+
+export interface SharePayload {
+  athleteId?: string;
+  phase: Phase;
+  confidenceBucket: 'low' | 'med' | 'high';
+}
+
+export interface CyclePrivacySetting {
+  shareScope: ShareScope;
+  lastSharedPhase?: Phase | null;
+  lastSharedConfidence?: 'low' | 'med' | 'high' | null;
+  lastSharedAt?: string | null;
+}
+
+export interface WarmupSummary {
+  title: string;
+  description: string;
+  nudges: string[];
+  cta?: string | null;
+}
+
+export type RtsGateCategory = 'hop' | 'strength' | 'balance' | 'psych';
+export type RtsTrustGrade = 'A' | 'B' | 'C';
+
+export interface RtsGateMetric {
+  id: string;
+  label: string;
+  category: RtsGateCategory;
+  units: string;
+  scale: 'percent' | 'ratio';
+  latest: number;
+  best: number;
+  monthAgo: number;
+  target: number;
+  trust: RtsTrustGrade;
+  variance: number;
+  notes: string;
+  status: 'pass' | 'fail';
+  driftLocked: boolean;
+  driftPercent: number;
+}
+
+export interface RtsGateSummary {
+  athleteId: string;
+  sport: 'pivot' | 'non_pivot';
+  sex: 'female' | 'male';
+  age: number;
+  ready: boolean;
+  progressPct: number;
+  gatesRemaining: number;
+  explanation: string;
+  cameraHint: string;
+  receiptUrl: string | null;
+  gates: RtsGateMetric[];
+}
 
 export interface RehabAssessmentVideo {
   id: string;
@@ -398,6 +801,23 @@ export interface RehabAssessmentRecord {
   clinicianNotes: string;
   createdAt: string;
   videos?: RehabAssessmentVideo[];
+  formGrade?: 'A' | 'B' | 'C';
+  formCue?: string;
+}
+
+export interface RehabAssessmentResultDTO {
+  rehabAssessmentId: string;
+  athleteId: string;
+  cleared: boolean;
+  limbSymmetryScore: number;
+  concerns: string[];
+  recommendedExercises: string[];
+  parentSummary: string;
+  athleteSummary: string;
+  clinicianNotes: string;
+  generatedAt: string;
+  formGrade: 'A' | 'B' | 'C';
+  formCue: string;
 }
 
 export interface RehabAssessmentInput {
@@ -438,6 +858,18 @@ export interface RehabAssessmentInput {
       units: 'lbs' | 'kgs' | 'n';
     };
   };
+  crossoverHop?: {
+    injuredDistance: number;
+    healthyDistance: number;
+  };
+  yBalance?: {
+    injuredComposite: number;
+    healthyComposite: number;
+  };
+  psychological?: {
+    aclRsiScore: number;
+  };
+  strengthToBw?: number;
 }
 
 export interface AthleteSummary {
